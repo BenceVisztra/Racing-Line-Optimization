@@ -6,8 +6,8 @@ g = 9.81; % m/s^2
 
 % Vehicle Limits
 A_lat = 1.5 * g;
-A_long_fwd = 0.6 * g;
-A_long_brake = 0.6 * g;
+A_long_fwd = 0.9 * g;
+A_long_brake = 0.9 * g;
 J_lat = 5.0 * g;
 J_long = 2.0 * g;
 R_min = 2.0;
@@ -78,8 +78,8 @@ lb = -inf(size(X0));
 ub =  inf(size(X0));
 
 % General lateral track limits
-lb(1:N) = -15;
-ub(1:N) =  15;
+lb(1:N) = -8;
+ub(1:N) =  8;
 
 % Enforce CW / CCW keepout constraints exactly in Cartesian space mapping
 for i = 1:size(track_pts, 1)
@@ -134,10 +134,10 @@ options = optimoptions('fmincon', ...
 
 % Regularization weights
 W_smooth = 0.05; 
-W_vel_smooth = 0.02; % Tune between 0.01 and 0.1 to suppress longitudinal chatter
+W_vel_smooth = 0.005; % Suppresses longitudinal chatter
 
-% Objective: Minimize lap time + spatial smoothing + velocity smoothing
-% diff([v; v(1)]) ensures the periodic boundary is also penalized for sudden speed jumps
+% Objective: Minimize lap time + spatial deviation + speed chatter
+% W_steer has been removed to prevent O(N^2) dense matrix slowdowns
 costFunc = @(X) sum(X(2*N+1 : end)) ...
     + W_smooth * sum(diff([X(1:N); X(1)]).^2) ...
     + W_vel_smooth * sum(diff([X(N+1:2*N); X(N+1)]).^2);
