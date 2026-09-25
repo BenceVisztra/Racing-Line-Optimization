@@ -12,7 +12,7 @@ The following vehicle parameters are adjustable:
 - longitudinal jerk
 - minimum turning radius
 
-The following figure shows how the output in matlab
+The following figure shows the output in matlab
 ![Figure](https://github.com/BenceVisztra/Racing-Line-Optimization/blob/main/t-race_opt.png)
 
 
