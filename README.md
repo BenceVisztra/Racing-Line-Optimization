@@ -13,7 +13,6 @@ The following vehicle parameters are adjustable:
 - minimum turning radius
 
 The following figure shows how the output in matlab
-https://github.com/BenceVisztra/Racing-Line-Optimization/blob/main/t-race_opt.png
 ![Figure](https://github.com/BenceVisztra/Racing-Line-Optimization/blob/main/t-race_opt.png)
 
 
