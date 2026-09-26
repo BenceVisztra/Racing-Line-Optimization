@@ -300,11 +300,40 @@ figure('Position', [200, 200, 700, 800]);
 plot(ref_path.x, ref_path.y, 'k--', 'DisplayName', 'Centerline'); hold on;
 
 % Plot using the dense arrays
-p_opt = plot(x_plot_dense, y_plot_dense, 'b-', 'LineWidth', 2, 'DisplayName', 'Optimal Line', 'UserData', hover_data);
+
+% Calculate longitudinal G-force for the color mapping
+G_long = hover_data.ax / g;
+
+% Create a continuous multi-colored line using patch
+p_opt = patch([x_plot_dense; NaN], [y_plot_dense; NaN], [G_long; NaN], ...
+    'FaceColor', 'none', ...
+    'EdgeColor', 'interp', ...
+    'LineWidth', 2, ...
+    'DisplayName', 'Optimal Line', ...
+    'UserData', hover_data);
+
+% Define a Red (Braking) -> Yellow (Neutral) -> Green (Acceleration) colormap
+cmap = [linspace(1, 1, 128)', linspace(0, 1, 128)', zeros(128, 1); ...
+    linspace(1, 0, 128)', linspace(1, 1, 128)', zeros(128, 1)];
+colormap(gca, cmap);
+
+% Force symmetric color limits so 0 G is exactly yellow
+max_G = max(A_long_fwd, A_long_brake) / g;
+try
+    clim(gca, [-max_G, max_G]); % R2022a and newer
+catch
+    caxis(gca, [-max_G, max_G]); % Older MATLAB versions
+end
+
+% Add colorbar scale
+cb = colorbar;
+cb.Label.String = 'Longitudinal Acceleration (G)';
+cb.Color = [0.9 0.9 0.9];
+
 scatter(track_pts(:,1), track_pts(:,2), 50, 'r', 'filled', 'DisplayName', 'Track Apexes');
 lgd = legend;
-lgd.Position(1) = lgd.Position(1) - 0.05; 
-lgd.Position(2) = lgd.Position(2) - 0.4; 
+lgd.Position(1) = lgd.Position(1) - 0.02; 
+lgd.Position(2) = lgd.Position(2) - 0.45; 
 axis equal; grid on;
 
 % Force axis ticks to 2m intervals
@@ -323,7 +352,7 @@ R_actual_min = min(1 ./ abs(kappa));
 param_str = sprintf('Vehicle Limits:\nA_{lat}: %.1f G\nA_{long, fwd}: %.1f G\nA_{long, brake}: %.1f G\nJ_{lat}: %.1f G/s\nJ_{long}: %.1f G/s\nR_{actual}: %.2f m', ...
     A_lat/g, A_long_fwd/g, A_long_brake/g, J_lat/g, J_long/g, R_actual_min);
 
-annotation('textbox', [0.7, 0.55, 0.2, 0.2], 'String', param_str, ...
+annotation('textbox', [0.65, 0.50, 0.2, 0.2], 'String', param_str, ...
     'FitBoxToText', 'on', ...
     'BackgroundColor', [0.15 0.15 0.15], ... 
     'Color', [0.9 0.9 0.9], ...              
@@ -407,7 +436,6 @@ function txt = hover_callback(~, event_obj)
     target_line = event_obj.Target;
     target_name = target_line.DisplayName;
     target_data = target_line.UserData;
-    target_idx = event_obj.DataIndex;
     
     if isempty(target_data)
         txt = {sprintf('X: %.2f', pos(1)); sprintf('Y: %.2f', pos(2))};
@@ -420,18 +448,23 @@ function txt = hover_callback(~, event_obj)
     else
         other_name = 'Optimal Line';
     end
-    other_line = findobj(ax, 'Type', 'Line', 'DisplayName', other_name);
+    
+    % Removed 'Type', 'Line' argument to allow detection of Patch objects
+    other_line = findobj(ax, 'DisplayName', other_name);
     
     g = 9.81; 
+    
+    % Safely calculate index via spatial distance instead of DataIndex
+    % to prevent array dimension mismatches from the patch NaN padding
+    t_dists = sqrt((target_line.XData - pos(1)).^2 + (target_line.YData - pos(2)).^2);
+    [~, target_idx] = min(t_dists);
     
     has_other = ~isempty(other_line) && ~isempty(other_line.UserData);
     if has_other
         other_data = other_line.UserData;
-        other_x = other_line.XData;
-        other_y = other_line.YData;
         
-        dists = sqrt((other_x - pos(1)).^2 + (other_y - pos(2)).^2);
-        [~, other_idx] = min(dists);
+        o_dists = sqrt((other_line.XData - pos(1)).^2 + (other_line.YData - pos(2)).^2);
+        [~, other_idx] = min(o_dists);
         
         % Delta Time: (Telemetry - Optimal)
         if strcmp(target_name, 'RaceChrono Telemetry')
@@ -561,4 +594,14 @@ s_rc_raw = [0; cumsum(ds_rc)];
 v_rc_clean = v_rc(unique_idx);
 v_rc_interp = interp1(s_rc_clean, v_rc_clean, s_lap, 'linear', 'extrap');
 
-plot(x_rc, y_rc, 'm-', 'LineWidth', 1.5, 'DisplayName', 'RaceChrono Telemetry', 'UserData', rc_hover);
+% Calculate longitudinal G-force for the color mapping
+G_long_rc = rc_hover.ax / 9.81;
+
+% Create a continuous colored dashed line for telemetry
+patch([x_rc; NaN], [y_rc; NaN], [G_long_rc; NaN], ...
+    'FaceColor', 'none', ...
+    'EdgeColor', 'interp', ...
+    'LineStyle', '--', ...
+    'LineWidth', 1.5, ...
+    'DisplayName', 'RaceChrono Telemetry', ...
+    'UserData', rc_hover);
