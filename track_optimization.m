@@ -13,7 +13,7 @@ J_long = 1.5 * g;
 R_min = 2.0;
 
 % Import Data
-rc_data = readtable('racechrono_export_1196.csv');
+rc_data = readtable('racechrono_ts_11_96.csv');
 % Telemetry Rotation
 theta = 3.697; % radians %3.665 for 12.09
 % Telemetry Translation
