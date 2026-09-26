@@ -30,3 +30,8 @@ The reference path is discretized into $N$ nodes. The current formulation relies
 - $N=150$ represents the practical limit for this dense formulation.
   
 Applying this codebase to larger, complex circuits where extra resolution would be required will require migrating to an interior-point solver with a sparse, analytically defined Jacobian, or utilizing a specialized optimal control framework.
+
+
+## Custom Tracks
+
+Simple custom track layouts can be implemented by defining the coordinates inside the track_pts matrix. The section between P1 and P2 represents the finish line, the rest of the points define the remaining apexes. For tracks where the corner has a nonzero radii, a keepout circle shall be defined around the center point of the apex.
