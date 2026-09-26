@@ -1,4 +1,4 @@
-% Racing Line and Lap Time Optimization using Frenet-Serret Frame
+% Racing Line and Lap Time Optimization using CasADi
 clear; clc; close all;
 
 %% 1. Parameters and Constraints
@@ -23,8 +23,9 @@ translate_y = -20.5;
 rc_start_idx = 193;
 rc_end_idx = 734;
 
-% Solver Nodes (recommended ~1 node/m)
-nodes = 100;
+% Solver Nodes (recommended at least ~1 node/m for tracks with a tight hairpin)
+% Above 500 nodes you might have trouble running the simulation.
+nodes = 120;
 
 % Track Definition
 track_name = 'T race CW';
