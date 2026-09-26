@@ -12,31 +12,28 @@ J_lat = 4.0 * g;
 J_long = 1.5 * g;
 R_min = 2.0;
 
-% Track Definition
-% Format: [X, Y, Keepout, Direction (1=CW, -1=CCW)]
-% P1 and P2 define the start/finish gate (X=0 cross-section)
-
-t_race_cw = [
-    0.0,   30.0,  0.4, -1;  % P1 Finish Top
-    0.0,   20.0,  0.4,  1;  % P2 Finish Bottom
-    10.0,   20.0,  0.4,  1;  % P3
-    5.0,   14.0,  0.4, -1;  % P4
-    0.0,  -20.0,  0.4,  1;  % P5
-    -5.0,   14.0,  0.4, -1;  % P6
-    -10.0,   20.0,  0.4,  1   % P7
-    ];
-
-track_pts = t_race_cw;
-nodes = 100;
-
+% Import Data
+rc_data = readtable('racechrono_export_1196.csv');
 % Telemetry Rotation
-theta = 3.665; % radians
+theta = 3.697; % radians %3.665 for 12.09
 % Telemetry Translation
 translate_x = 0;
 translate_y = -20.5;
 % Telemetry Trimming
-rc_start_idx = 178;
-rc_end_idx = 725;
+rc_start_idx = 193;
+rc_end_idx = 734;
+
+% Solver Nodes (recommended ~1 node/m)
+nodes = 100;
+
+% Track Definition
+track_name = 'T race CW';
+track_pts = track_selection(track_name);
+
+% Options:
+% T race CW
+% T race CCW
+
 
 %% 2. Generate Reference Centerline with Periodic Boundaries
 gate_mid = (track_pts(1, 1:2) + track_pts(2, 1:2)) / 2;
@@ -217,14 +214,75 @@ fprintf('True Lap Time: %.3f s\n', true_lap_time);
 
 
 
+%% 6. Racebox data
+% 1. Import Data
+rc_data = rmmissing(rc_data);
+lat = rc_data.latitude;
+lon = rc_data.longitude;
+v_rc = rc_data.speed;
+
+% Extract accelerations and convert from G to m/s^2 for the struct
+ax_rc_raw = rc_data.longitudinal_acc * 9.81;
+ay_rc_raw = rc_data.lateral_acc * 9.81;
+
+% 2. Equirectangular Projection to Local Cartesian (Meters)
+R_earth = 6371000; % m
+lat0 = mean(lat);  
+lon0 = mean(lon);  
+
+lat_rad = deg2rad(lat);
+lon_rad = deg2rad(lon);
+lat0_rad = deg2rad(lat0);
+lon0_rad = deg2rad(lon0);
+x_rc_raw = R_earth * cos(lat0_rad) .* (lon_rad - lon0_rad);
+y_rc_raw = R_earth * (lat_rad - lat0_rad);
+
+% 3. Trim Session Data
+x_rc_raw = x_rc_raw(rc_start_idx:rc_end_idx);
+y_rc_raw = y_rc_raw(rc_start_idx:rc_end_idx);
+v_rc = v_rc(rc_start_idx:rc_end_idx);
+ax_rc = ax_rc_raw(rc_start_idx:rc_end_idx);
+ay_rc = ay_rc_raw(rc_start_idx:rc_end_idx);
+
+% 4. Rotation (applied to raw projected coordinates)
+R_mat = [cos(theta), -sin(theta); sin(theta), cos(theta)];
+coords_rot = R_mat * [x_rc_raw, y_rc_raw]';
+x_rot = coords_rot(1,:)';
+y_rot = coords_rot(2,:)';
+
+% 5. Translation (Anchoring P3 after rotation)
+[~, idx_P3_rc] = min(y_rot);
+dx = x_rot(idx_P3_rc) - translate_x;
+dy = y_rot(idx_P3_rc) - translate_y;
+x_rc = x_rot - dx;
+y_rc = y_rot - dy;
+
+% 6. Calculate Telemetry Kinematics for Hover Display
+dx_rc = diff(x_rc);
+dy_rc = diff(y_rc);
+ds_rc = sqrt(dx_rc.^2 + dy_rc.^2);
+
+% Derive time steps spatially 
+v_avg_rc = 0.5 * (v_rc(1:end-1) + v_rc(2:end));
+v_avg_rc(v_avg_rc < 0.1) = 0.1; 
+dt_rc = ds_rc ./ v_avg_rc;
+
+t_rc = [0; cumsum(dt_rc)]; % Cumulative elapsed time
+
+% Jerk (differentiating the raw CSV accelerations)
+jx_rc = diff(ax_rc) ./ dt_rc;
+jy_rc = diff(ay_rc) ./ dt_rc;
+
+% Pad arrays with NaNs to exactly match the length of the coordinate arrays
+rc_hover.t  = t_rc; 
+rc_hover.v  = v_rc;
+rc_hover.ax = ax_rc; 
+rc_hover.ay = ay_rc;
+rc_hover.jx = [NaN; jx_rc];
+rc_hover.jy = [NaN; jy_rc];
 
 
-
-
-
-
-
-%% 6. Extract, Calculate Kinematics, and Plot Results
+%% 7. Extract, Calculate Kinematics, Interpolate
 n_opt  = sol.value(n);
 v_opt  = sol.value(v);
 dt_opt = sol.value(dt);
@@ -296,11 +354,23 @@ hover_data.jx    = interp1(s_opt, jx_clean, s_dense, 'makima');
 hover_data.jy    = interp1(s_opt, jy_clean, s_dense, 'makima');
 hover_data.kappa = interp1(s_opt, kappa_clean, s_dense, 'makima');
 
-figure('Position', [200, 200, 700, 800]);
-plot(ref_path.x, ref_path.y, 'k--', 'DisplayName', 'Centerline'); hold on;
 
-% Plot using the dense arrays
+%% 8.Plot Results
+% Create or update Figure 1, force docking, and clear previous run data
 
+figure(1);
+set(gcf, 'WindowStyle', 'docked');
+clf; 
+
+
+% Setup Legend
+h_center = plot(ref_path.x, ref_path.y, 'k--', 'DisplayName', 'Centerline'); hold on;
+h_opt_dummy = plot(NaN, NaN, 'w--', 'LineWidth', 2);
+h_apex = scatter(track_pts(:,1), track_pts(:,2), 50, 'm', 'filled', 'DisplayName', 'Track Apexes');
+h_gps_dummy = plot(NaN, NaN, 'w-', 'LineWidth', 2);
+
+
+% 1. Color Mapping
 % Calculate longitudinal G-force for the color mapping
 G_long = hover_data.ax / g;
 
@@ -308,13 +378,14 @@ G_long = hover_data.ax / g;
 p_opt = patch([x_plot_dense; NaN], [y_plot_dense; NaN], [G_long; NaN], ...
     'FaceColor', 'none', ...
     'EdgeColor', 'interp', ...
+    'LineStyle', '--', ...
     'LineWidth', 2, ...
     'DisplayName', 'Optimal Line', ...
     'UserData', hover_data);
 
 % Define a Red (Braking) -> Yellow (Neutral) -> Green (Acceleration) colormap
 cmap = [linspace(1, 1, 128)', linspace(0, 1, 128)', zeros(128, 1); ...
-    linspace(1, 0, 128)', linspace(1, 1, 128)', zeros(128, 1)];
+        linspace(1, 0, 128)', linspace(1, 1, 128)', zeros(128, 1)];
 colormap(gca, cmap);
 
 % Force symmetric color limits so 0 G is exactly yellow
@@ -330,33 +401,30 @@ cb = colorbar;
 cb.Label.String = 'Longitudinal Acceleration (G)';
 cb.Color = [0.9 0.9 0.9];
 
-scatter(track_pts(:,1), track_pts(:,2), 50, 'r', 'filled', 'DisplayName', 'Track Apexes');
-lgd = legend;
-lgd.Position(1) = lgd.Position(1) - 0.02; 
-lgd.Position(2) = lgd.Position(2) - 0.45; 
+% 2. Setup axes and labels
+% Force axis ticks to 2m intervals
 axis equal; grid on;
 
-% Force axis ticks to 2m intervals
-xticks(-18:2:18);
+xticks(-40:2:40);
 yticks(-30:2:30);
 
 true_lap_time = sum(dt_opt);
 total_distance = sum(sqrt(diff(x_plot).^2 + diff(y_plot).^2));
-title(sprintf('Optimal Racing Line (Lap Time: %.3f s | Distance: %.2f m)', true_lap_time, total_distance));
 xlabel('X (m)'); ylabel('Y (m)');
 
 % Calculate the actual minimum radius used on the optimal trajectory
 R_actual_min = min(1 ./ abs(kappa));
 
 % Construct the parameter string
-param_str = sprintf('Vehicle Limits:\nA_{lat}: %.1f G\nA_{long, fwd}: %.1f G\nA_{long, brake}: %.1f G\nJ_{lat}: %.1f G/s\nJ_{long}: %.1f G/s\nR_{actual}: %.2f m', ...
+param_str = sprintf('Vehicle Limits:\nA_{lat}: %.1f G\nA_{long, fwd}: %.1f G\nA_{long, brake}: %.1f G\nJ_{lat}: %.1f G/s\nJ_{long}: %.1f G/s\nR_{min, actual}: %.2f m', ...
     A_lat/g, A_long_fwd/g, A_long_brake/g, J_lat/g, J_long/g, R_actual_min);
 
-annotation('textbox', [0.65, 0.50, 0.2, 0.2], 'String', param_str, ...
-    'FitBoxToText', 'on', ...
+% Create the text box using data units and attach the drag callback
+text(-36, 22, param_str, 'Units', 'data', ...
     'BackgroundColor', [0.15 0.15 0.15], ... 
     'Color', [0.9 0.9 0.9], ...              
     'EdgeColor', [0.5 0.5 0.5], ...          
+    'Margin', 5, ...
     'Interpreter', 'tex');
 
 % Enable interactive data cursor
@@ -364,231 +432,8 @@ dcm = datacursormode(gcf);
 dcm.Enable = 'on';
 dcm.UpdateFcn = @hover_callback;
 
-%% Constraint Function
-function [c, ceq] = vehicle_constraints(X, N, A_lat, A_long_fwd, A_long_brake, J_lat, J_long, R_min, ref_path)
-    n  = X(1:N);
-    v  = X(N+1:2*N);
-    dt = X(2*N+1:end); % Length N-1
-    
-    c = [];
-    ceq = [];
-    
-    % 1. Cartesian Coordinates
-    x = ref_path.x - n .* sin(ref_path.psi);
-    y = ref_path.y + n .* cos(ref_path.psi);
-    
-    dx = diff(x); % Length N-1
-    dy = diff(y);
-    ds = sqrt(dx.^2 + dy.^2); 
-    
-    % 2. Kinematics Equality (Distance vs Velocity)
-    v_avg = 0.5 * (v(1:N-1) + v(2:N));
-    ceq = [ceq; ds - v_avg .* dt];
-    
-    % 3. Flying Start (Periodic Boundary Conditions)
-    % C0 Continuity: Match lateral deviation and speed exactly
-    ceq = [ceq; n(1) - n(N)];
-    ceq = [ceq; v(1) - v(N)];
-    
-    % C1 Continuity: Match the rates of change in the Frenet frame.
-    % This allows the Cartesian path to follow the curvature smoothly.
-    dn_start = (n(2) - n(1)) / dt(1);
-    dn_end   = (n(N) - n(N-1)) / dt(end);
-    ceq = [ceq; dn_start - dn_end];
-    
-    dv_start = (v(2) - v(1)) / dt(1);
-    dv_end   = (v(N) - v(N-1)) / dt(end);
-    ceq = [ceq; dv_start - dv_end];
-    
-    % 4. Curvature Calculation
-    heading = atan2(dy, dx); % Length N-1
-    dHeading = diff(heading); % Length N-2
-    dHeading(dHeading > pi) = dHeading(dHeading > pi) - 2*pi;
-    dHeading(dHeading < -pi) = dHeading(dHeading < -pi) + 2*pi;
-    
-    kappa = dHeading ./ ds(1:N-2); 
-    
-    % 5. Turning Radius Limit
-    c = [c; abs(kappa) - (1/R_min)];
-    
-    % 6. Acceleration Constraints
-    a_x_seg = diff(v) ./ dt; % Length N-1
-    a_x_nodes = 0.5 * (a_x_seg(1:end-1) + a_x_seg(2:end)); % Align to interior nodes (N-2)
-    a_y_nodes = (v(2:N-1).^2) .* kappa; % Align to interior nodes (N-2)
-    
-    % Chopped Traction Circle
-    c = [c; (a_x_nodes.^2 + a_y_nodes.^2) - A_lat^2];
-    c = [c; a_x_nodes - A_long_fwd];        
-    c = [c; -a_x_nodes - A_long_brake];     
-    
-    % 7. Jerk Constraints
-    dt_nodes = 0.5 * (dt(1:end-1) + dt(2:end)); % Length N-2
-    j_x = diff(a_x_nodes) ./ dt_nodes(1:end-1); % Length N-3
-    j_y = diff(a_y_nodes) ./ dt_nodes(1:end-1); 
-    
-    c = [c; abs(j_x) - J_long];
-    c = [c; abs(j_y) - J_lat];
-end
 
-%% Hover Callback Function
-function txt = hover_callback(~, event_obj)
-    pos = event_obj.Position;
-    target_line = event_obj.Target;
-    target_name = target_line.DisplayName;
-    target_data = target_line.UserData;
-    
-    if isempty(target_data)
-        txt = {sprintf('X: %.2f', pos(1)); sprintf('Y: %.2f', pos(2))};
-        return;
-    end
-    
-    ax = target_line.Parent;
-    if strcmp(target_name, 'Optimal Line')
-        other_name = 'RaceChrono Telemetry';
-    else
-        other_name = 'Optimal Line';
-    end
-    
-    % Removed 'Type', 'Line' argument to allow detection of Patch objects
-    other_line = findobj(ax, 'DisplayName', other_name);
-    
-    g = 9.81; 
-    
-    % Safely calculate index via spatial distance instead of DataIndex
-    % to prevent array dimension mismatches from the patch NaN padding
-    t_dists = sqrt((target_line.XData - pos(1)).^2 + (target_line.YData - pos(2)).^2);
-    [~, target_idx] = min(t_dists);
-    
-    has_other = ~isempty(other_line) && ~isempty(other_line.UserData);
-    if has_other
-        other_data = other_line.UserData;
-        
-        o_dists = sqrt((other_line.XData - pos(1)).^2 + (other_line.YData - pos(2)).^2);
-        [~, other_idx] = min(o_dists);
-        
-        % Delta Time: (Telemetry - Optimal)
-        if strcmp(target_name, 'RaceChrono Telemetry')
-            delta_t = target_data.t(target_idx) - other_data.t(other_idx);
-        else
-            delta_t = other_data.t(other_idx) - target_data.t(target_idx);
-        end
-    end
-    
-    % 1. Build Target Line Data
-    txt = {
-        sprintf('--- %s ---', upper(target_name));
-        sprintf('Elapsed:  %6.2f s', target_data.t(target_idx))
-    };
-    
-    if has_other
-        txt = [txt; {sprintf('Delta:   %+6.2f s', delta_t)}];
-    end
-    
-    txt = [txt; {sprintf('Velocity: %6.1f km/h', target_data.v(target_idx) * 3.6)}];
-    
-    if strcmp(target_name, 'Optimal Line')
-        txt = [txt; {sprintf('Radius:   %6.1f m', 1/abs(target_data.kappa(target_idx)))}];
-    end
-    
-    txt = [txt; {
-        sprintf('A_{long}: %6.2f G', target_data.ax(target_idx) / g);
-        sprintf('A_{lat}:  %6.2f G', target_data.ay(target_idx) / g);
-        sprintf('J_{long}: %6.2f G/s', target_data.jx(target_idx) / g);
-        sprintf('J_{lat}:  %6.2f G/s', target_data.jy(target_idx) / g)
-    }];
-    
-    % 2. Build Nearest Line Data
-    if has_other
-        txt = [txt; {
-            ' ';
-            sprintf('--- %s ---', upper(other_name));
-            sprintf('Elapsed:  %6.2f s', other_data.t(other_idx));
-            sprintf('Delta:   %+6.2f s', delta_t); 
-            sprintf('Velocity: %6.1f km/h', other_data.v(other_idx) * 3.6)
-        }];
-        
-        if strcmp(other_name, 'Optimal Line')
-            txt = [txt; {sprintf('Radius:   %6.1f m', 1/abs(other_data.kappa(other_idx)))}];
-        end
-        
-        txt = [txt; {
-            sprintf('A_{long}: %6.2f G', other_data.ax(other_idx) / g);
-            sprintf('A_{lat}:  %6.2f G', other_data.ay(other_idx) / g);
-            sprintf('J_{long}: %6.2f G/s', other_data.jx(other_idx) / g);
-            sprintf('J_{lat}:  %6.2f G/s', other_data.jy(other_idx) / g)
-        }];
-    end
-end
 
-%% Racebox data
-% 1. Import Data
-rc_data = readtable('racechrono_export.csv');
-rc_data = rmmissing(rc_data);
-lat = rc_data.latitude;
-lon = rc_data.longitude;
-v_rc = rc_data.speed;
-
-% Extract accelerations and convert from G to m/s^2 for the struct
-ax_rc_raw = rc_data.longitudinal_acc * 9.81;
-ay_rc_raw = rc_data.lateral_acc * 9.81;
-
-% 2. Equirectangular Projection to Local Cartesian (Meters)
-R_earth = 6371000; % m
-lat0 = mean(lat);  
-lon0 = mean(lon);  
-
-lat_rad = deg2rad(lat);
-lon_rad = deg2rad(lon);
-lat0_rad = deg2rad(lat0);
-lon0_rad = deg2rad(lon0);
-x_rc_raw = R_earth * cos(lat0_rad) .* (lon_rad - lon0_rad);
-y_rc_raw = R_earth * (lat_rad - lat0_rad);
-
-% 3. Trim Session Data
-x_rc_raw = x_rc_raw(rc_start_idx:rc_end_idx);
-y_rc_raw = y_rc_raw(rc_start_idx:rc_end_idx);
-v_rc = v_rc(rc_start_idx:rc_end_idx);
-ax_rc = ax_rc_raw(rc_start_idx:rc_end_idx);
-ay_rc = ay_rc_raw(rc_start_idx:rc_end_idx);
-
-% 4. Rotation (applied to raw projected coordinates)
-R_mat = [cos(theta), -sin(theta); sin(theta), cos(theta)];
-coords_rot = R_mat * [x_rc_raw, y_rc_raw]';
-x_rot = coords_rot(1,:)';
-y_rot = coords_rot(2,:)';
-
-% 5. Translation (Anchoring P3 after rotation)
-[~, idx_P3_rc] = min(y_rot);
-dx = x_rot(idx_P3_rc) - translate_x;
-dy = y_rot(idx_P3_rc) - translate_y;
-x_rc = x_rot - dx;
-y_rc = y_rot - dy;
-
-% 6. Calculate Telemetry Kinematics for Hover Display
-dx_rc = diff(x_rc);
-dy_rc = diff(y_rc);
-ds_rc = sqrt(dx_rc.^2 + dy_rc.^2);
-
-% Derive time steps spatially 
-v_avg_rc = 0.5 * (v_rc(1:end-1) + v_rc(2:end));
-v_avg_rc(v_avg_rc < 0.1) = 0.1; 
-dt_rc = ds_rc ./ v_avg_rc;
-
-t_rc = [0; cumsum(dt_rc)]; % Cumulative elapsed time
-
-% Jerk (differentiating the raw CSV accelerations)
-jx_rc = diff(ax_rc) ./ dt_rc;
-jy_rc = diff(ay_rc) ./ dt_rc;
-
-% Pad arrays with NaNs to exactly match the length of the coordinate arrays
-rc_hover.t  = t_rc; 
-rc_hover.v  = v_rc;
-rc_hover.ax = ax_rc; 
-rc_hover.ay = ay_rc;
-rc_hover.jx = [NaN; jx_rc];
-rc_hover.jy = [NaN; jy_rc];
-
-% 7. Interpolation and Plotting
 s_rc_raw = [0; cumsum(ds_rc)];
 [s_rc_clean, unique_idx] = unique(s_rc_raw);
 v_rc_clean = v_rc(unique_idx);
@@ -598,10 +443,147 @@ v_rc_interp = interp1(s_rc_clean, v_rc_clean, s_lap, 'linear', 'extrap');
 G_long_rc = rc_hover.ax / 9.81;
 
 % Create a continuous colored dashed line for telemetry
-patch([x_rc; NaN], [y_rc; NaN], [G_long_rc; NaN], ...
+p_gps = patch([x_rc; NaN], [y_rc; NaN], [G_long_rc; NaN], ...
     'FaceColor', 'none', ...
     'EdgeColor', 'interp', ...
-    'LineStyle', '--', ...
-    'LineWidth', 1.5, ...
-    'DisplayName', 'RaceChrono Telemetry', ...
+    'LineWidth', 2, ...
+    'DisplayName', 'GPS', ...
     'UserData', rc_hover);
+
+
+% Generate the corrected legend using explicit handles and dummy lines
+lgd = legend;
+lgd.Position(1) = lgd.Position(1) - 0.02; 
+lgd.Position(2) = lgd.Position(2) - 0.45; 
+lgd = legend([h_center, h_opt_dummy, h_apex, h_gps_dummy], ...
+    {'Centerline', 'Optimal Line', 'Track Apexes', 'GPS'}, ...
+    'Location', 'southeast');
+
+
+% Disable default data cursor mode
+datacursormode(gcf, 'off');
+
+% Create fixed HUD box in the bottom-left corner
+text(0.02, 0.02, 'Hover over track to load telemetry...', ...
+    'Units', 'normalized', ...
+    'VerticalAlignment', 'bottom', ...
+    'BackgroundColor', [0.15 0.15 0.15], ...
+    'Color', [0.9 0.9 0.9], ...
+    'EdgeColor', [0.5 0.5 0.5], ...
+    'Margin', 5, ...
+    'Interpreter', 'tex', ...
+    'Tag', 'HUD_Text');
+
+% Bind the motion tracker to update the HUD continuously
+set(gcf, 'WindowButtonMotionFcn', @hud_update_callback);
+
+
+% Update figure title with comparative data and track name
+gps_lap_time = t_rc(end);
+gps_distance = s_rc_raw(end);
+
+title(sprintf('[%s] Optimal Line (%.2fs | %.1fm) vs GPS (%.2fs | %.1fm)', ...
+    track_name, true_lap_time, total_distance, gps_lap_time, gps_distance), ...
+    'Interpreter', 'none');
+
+
+
+
+%% Background HUD Update Function
+function hud_update_callback(fig, ~)
+    ax = findobj(fig, 'Type', 'Axes');
+    if isempty(ax), return; end
+    ax = ax(1);
+
+    hud = findobj(ax, 'Tag', 'HUD_Text');
+    if isempty(hud), return; end
+
+    cp = ax.CurrentPoint;
+    cx = cp(1,1);
+    cy = cp(1,2);
+
+    opt_patch = findobj(ax, 'Type', 'Patch', 'DisplayName', 'Optimal Line');
+    gps_patch = findobj(ax, 'Type', 'Patch', 'DisplayName', 'GPS');
+
+    if isempty(opt_patch) || isempty(gps_patch), return; end
+
+    opt_data = opt_patch.UserData;
+    gps_data = gps_patch.UserData;
+
+    % Calculate cursor distance to both lines
+    dist_opt = sqrt((opt_patch.XData - cx).^2 + (opt_patch.YData - cy).^2);
+    [min_d_opt, idx_opt] = min(dist_opt);
+
+    dist_gps = sqrt((gps_patch.XData - cx).^2 + (gps_patch.YData - cy).^2);
+    [min_d_gps, idx_gps] = min(dist_gps);
+
+    % If cursor is far away from the track, clear the data
+    if min_d_opt > 3 && min_d_gps > 3
+        hud.String = 'Hover over track to load telemetry...';
+        return;
+    end
+
+    % Standardize Delta as (GPS Time - Optimal Time)
+    delta_t = gps_data.t(idx_gps) - opt_data.t(idx_opt);
+    g = 9.81; 
+
+    txt = {
+        '--- GPS ---';
+        sprintf('Elapsed:  %6.2f s', gps_data.t(idx_gps));
+        sprintf('Delta:   %+6.2f s', delta_t);
+        sprintf('Velocity: %6.1f km/h', gps_data.v(idx_gps) * 3.6);
+        sprintf('A_{long}: %6.2f G', gps_data.ax(idx_gps) / g);
+        sprintf('A_{lat}:  %6.2f G', gps_data.ay(idx_gps) / g);
+        sprintf('J_{long}: %6.2f G/s', gps_data.jx(idx_gps) / g);
+        sprintf('J_{lat}:  %6.2f G/s', gps_data.jy(idx_gps) / g);
+        ' ';
+        '--- OPTIMAL LINE ---';
+        sprintf('Elapsed:  %6.2f s', opt_data.t(idx_opt));
+        sprintf('Delta:   %+6.2f s', -delta_t);
+        sprintf('Velocity: %6.1f km/h', opt_data.v(idx_opt) * 3.6);
+        sprintf('Radius:   %6.1f m', 1/abs(opt_data.kappa(idx_opt)));
+        sprintf('A_{long}: %6.2f G', opt_data.ax(idx_opt) / g);
+        sprintf('A_{lat}:  %6.2f G', opt_data.ay(idx_opt) / g);
+        sprintf('J_{long}: %6.2f G/s', opt_data.jx(idx_opt) / g);
+        sprintf('J_{lat}:  %6.2f G/s', opt_data.jy(idx_opt) / g)
+    };
+
+    hud.String = txt;
+end
+
+
+
+%% Track Selection Helper
+
+% Track Definition
+% Format: [X, Y, Keepout, Direction (1=CW, -1=CCW)]
+% P1 and P2 define the start/finish gate (X=0 cross-section)
+
+function pts = track_selection(track_name)
+    switch track_name
+        case 'T race CW'
+            pts = [
+                  0.0,  30.0, 0.4, -1; % F1 Finish Top
+                  0.0,  20.0, 0.4,  1; % F2 Finish Bottom
+                 10.0,  20.0, 0.4,  1; % T1
+                  5.0,  14.0, 0.4, -1; % T2
+                  0.0, -20.0, 0.4,  1; % T3
+                 -5.0,  14.0, 0.4, -1; % T4
+                -10.0,  20.0, 0.4,  1  % T5
+                ];
+    
+        case 'T race CCW'
+            pts = [
+                  0.0,  30.0, 0.4,  1; % F1 Finish Top
+                  0.0,  20.0, 0.4, -1; % F2 Finish Bottom
+                -10.0,  20.0, 0.4, -1; % T1
+                 -5.0,  14.0, 0.4,  1; % T2
+                  0.0, -20.0, 0.4, -1; % T3
+                  5.0,  14.0, 0.4,  1; % T4
+                 10.0,  20.0, 0.4, -1  % T5
+                ];
+    
+        otherwise
+            error('Track "%s" not found. Check track_selection options.', track_name);
+    end
+end
