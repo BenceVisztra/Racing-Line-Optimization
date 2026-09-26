@@ -15,7 +15,7 @@ The following picture shows the interactible output figure in matlab:
 
 ## Track Example and Data Import
 
-The repository includes the T-Race track geometry [t-raceglobal.com](https://t-raceglobal.com/) and the current T-Race world record datalog (12.09 sec, as of 2026-09-26).
+The repository includes the T-Race track geometry ([t-raceglobal.com](https://t-raceglobal.com/)) and the current T-Race world record datalog (12.09 sec, as of 2026-09-26).
 
 ### Importing external telemetry requires manual alignment and trimming:
 
