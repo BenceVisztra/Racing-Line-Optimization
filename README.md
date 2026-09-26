@@ -1,5 +1,5 @@
 # Racing Line Optimization and Experimental Data Comparison
-This repository contains MATLAB code to calculate optimal lap times and optimize racing lines using a Frenet-Serret frame. It allows users to import RaceChrono telemetry data and benchmark it directly against the simulated optimal line.
+This repository contains MATLAB code to calculate optimal lap times and optimize racing lines using CasADi. It allows users to import RaceChrono telemetry data and benchmark it directly against the simulated optimal line.
 
 ## Adjustable Vehicle Parameters:
 - Lateral acceleration
@@ -15,12 +15,12 @@ The following picture shows the interactible output figure in matlab:
 
 ## Track Example and Data Import
 
-The repository includes the T-Race track geometry ([t-raceglobal.com](https://t-raceglobal.com/)) and the current T-Race world record datalog (12.09 sec, as of 2026-09-26).
+The repository includes the T-Race track geometry ([t-raceglobal.com](https://t-raceglobal.com/)) and the current T-Race world record lap datalog (11.96 sec, as of 2026-09-27).
 
 ### Importing external telemetry requires manual alignment and trimming:
 
 - Rotation: Adjust the theta variable to rotate the GPS projection until the track layout matches the simulated reference points.
-- Translation: Apply an offset if the rotated telemetry is spatially shifted from the Cartesian origin. Tight lines typically require minimal to no translation.
+- Translation: Apply an offset if the rotated telemetry is spatially shifted from the Cartesian origin.
 - Trimming: Adjust start_idx and end_idx so the telemetry array begins exactly at the finish line. This synchronizes the distance parameter, which is strictly required for the time delta calculations to function correctly.
 
 ## Solver Implementation
