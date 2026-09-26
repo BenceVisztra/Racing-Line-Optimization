@@ -13,27 +13,26 @@ J_long = 1.0 * g;
 R_min = 2.0;
 
 % Track Definition
-% Added P6 to force a sweeping turn and prevent Frenet frame collapse
 % Format: [X, Y, Keepout, Direction (1=CW, -1=CCW)]
+% P1 and P2 define the start/finish gate (X=0 cross-section)
 track_pts = [
-    10.0,  20.0,  0.4,  1;  % P1
-    5.0,   14.0,  0.4, -1;  % P2
-    0.0,  -20.0,  0.4,  1;  % P3
-    -5.0,  14.0,  0.4, -1;  % P4
-    -10.0, 20.0,  0.4,  1;  % P5
-    0.0,   27.0,  0.4, -1   % P6 (Outer boundary rounding the top)
-    0.0,   20.0,  0.4,  1   % P7 (Inner boundary rounding the top)
+     0.0,   27.0,  0.4, -1;  % P1 (Outer boundary rounding the top)
+     0.0,   20.0,  0.4,  1;  % P2 (Inner boundary rounding the top)
+    10.0,   20.0,  0.4,  1;  % P3
+     5.0,   14.0,  0.4, -1;  % P4
+     0.0,  -20.0,  0.4,  1;  % P5
+    -5.0,   14.0,  0.4, -1;  % P6
+   -10.0,   20.0,  0.4,  1   % P7
 ];
-
 
 %% 2. Generate Reference Centerline with Periodic Boundaries
 % Decouple centerline waypoints from apex bounds to prevent a spline kink.
-% We replace P6 and P7 with a single waypoint exactly between them.
-pts_base = track_pts(1:5, 1:2);
-pts_base(6, :) = [0.0, 22.5]; % Center of the P6-P7 gate
+% We replace P1 and P2 (the start/finish gate) with a single waypoint exactly between them.
+pts_base = zeros(6, 2);
+pts_base(1, :) = [0.0, 23.5]; % Center of the P1-P2 gate
+pts_base(2:6, :) = track_pts(3:7, 1:2); % P3 through P7
 
 % Wrap points to create a periodic boundary for the spline
-% Pads the array with the previous 2 and next 2 points to ensure smooth tangents
 pts_ext = [pts_base(end-1:end, :); pts_base; pts_base(1:2, :)];
 
 % Calculate cumulative chord distance
@@ -42,15 +41,14 @@ dy_ext = diff(pts_ext(:,2));
 d_chord_ext = sqrt(dx_ext.^2 + dy_ext.^2);
 s_ext = [0; cumsum(d_chord_ext)];
 
-% Anchor the start/finish line exactly at the P6/P7 gate (X = 0).
-% The gate waypoint [0.0, 22.5] sits at indices 2 and 8 of the extended array.
-s_start = s_ext(2);
-s_end   = s_ext(8);
+% Anchor the start/finish line exactly at the P1/P2 gate (X = 0).
+% The gate waypoint [0.0, 23.5] sits at index 3 and 9 of the extended array.
+s_start = s_ext(3);
+s_end   = s_ext(9);
 
 % Create a dense interpolation over the ENTIRE extended array
 N_ext = 300; 
 s_interp_ext = linspace(s_ext(1), s_ext(end), N_ext);
-
 ref_x_raw = makima(s_ext, pts_ext(:,1), s_interp_ext)';
 ref_y_raw = makima(s_ext, pts_ext(:,2), s_interp_ext)';
 
