@@ -17,8 +17,8 @@ R_min = 2.0;
 % P1 and P2 define the start/finish gate (X=0 cross-section)
 
 t_race_cw = [
-    0.0,   30.0,  0.4, -1;  % P1 (Outer boundary rounding the top)
-    0.0,   20.0,  0.4,  1;  % P2 (Inner boundary rounding the top)
+    0.0,   30.0,  0.4, -1;  % P1 Finish Top
+    0.0,   20.0,  0.4,  1;  % P2 Finish Bottom
     10.0,   20.0,  0.4,  1;  % P3
     5.0,   14.0,  0.4, -1;  % P4
     0.0,  -20.0,  0.4,  1;  % P5
@@ -29,6 +29,11 @@ t_race_cw = [
 track_pts = t_race_cw;
 nodes = 100;
 
+% Telemetry Rotation
+theta = 3.665; % radians
+% Telemetry Translation
+translate_x = 0;
+translate_y = -20.5;
 % Telemetry Trimming
 rc_start_idx = 178;
 rc_end_idx = 725;
@@ -514,7 +519,6 @@ ax_rc = ax_rc_raw(rc_start_idx:rc_end_idx);
 ay_rc = ay_rc_raw(rc_start_idx:rc_end_idx);
 
 % 4. Rotation (applied to raw projected coordinates)
-theta = 3.665; 
 R_mat = [cos(theta), -sin(theta); sin(theta), cos(theta)];
 coords_rot = R_mat * [x_rc_raw, y_rc_raw]';
 x_rot = coords_rot(1,:)';
@@ -522,8 +526,8 @@ y_rot = coords_rot(2,:)';
 
 % 5. Translation (Anchoring P3 after rotation)
 [~, idx_P3_rc] = min(y_rot);
-dx = x_rot(idx_P3_rc) - 0.0;
-dy = y_rot(idx_P3_rc) - (-20.5);
+dx = x_rot(idx_P3_rc) - translate_x;
+dy = y_rot(idx_P3_rc) - translate_y;
 x_rc = x_rot - dx;
 y_rc = y_rot - dy;
 
