@@ -6,8 +6,8 @@ g = 9.81; % m/s^2
 
 % Vehicle Limits
 A_lat = 1.5 * g;
-A_long_fwd = 0.9 * g;
-A_long_brake = 0.9 * g;
+A_long_fwd = 0.6 * g;
+A_long_brake = 0.6 * g;
 J_lat = 4.0 * g;
 J_long = 1.5 * g;
 R_min = 2.0;
