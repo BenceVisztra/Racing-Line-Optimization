@@ -6,10 +6,10 @@ g = 9.81; % m/s^2
 
 % Vehicle Limits
 A_lat = 1.5 * g;
-A_long_fwd = 0.6 * g;
-A_long_brake = 0.6 * g;
+A_long_fwd = 0.9 * g;
+A_long_brake = 0.9 * g;
 J_lat = 4.0 * g;
-J_long = 1.0 * g;
+J_long = 1.5 * g;
 R_min = 2.0;
 
 % Track Definition
@@ -27,53 +27,52 @@ t_race_cw = [
     ];
 
 track_pts = t_race_cw;
-nodes = 500;
+nodes = 100;
 
 % Telemetry Trimming
 rc_start_idx = 178;
 rc_end_idx = 725;
 
 %% 2. Generate Reference Centerline with Periodic Boundaries
-% Decouple centerline waypoints from apex bounds to prevent a spline kink.
-% We replace P1 and P2 (the start/finish gate) with a single waypoint exactly between them.
-pts_base = zeros(6, 2);
-pts_base(1, :) = [0.0, 23.5]; % Center of the P1-P2 gate
-pts_base(2:6, :) = track_pts(3:7, 1:2); % P3 through P7
+gate_mid = (track_pts(1, 1:2) + track_pts(2, 1:2)) / 2;
+pts_base = [gate_mid; track_pts(3:end, 1:2)];
+num_base_pts = size(pts_base, 1);
 
-% Wrap points to create a periodic boundary for the spline
-pts_ext = [pts_base(end-1:end, :); pts_base; pts_base(1:2, :)];
+% Replicate base track 3 times to ensure complete periodic symmetry
+pts_ext = repmat(pts_base, 3, 1);
+pts_ext = [pts_ext; pts_base(1, :)]; % Close trailing loop
 
-% Calculate cumulative chord distance
 dx_ext = diff(pts_ext(:,1));
 dy_ext = diff(pts_ext(:,2));
 d_chord_ext = sqrt(dx_ext.^2 + dy_ext.^2);
 s_ext = [0; cumsum(d_chord_ext)];
 
-% Anchor the start/finish line exactly at the P1/P2 gate (X = 0).
-% The gate waypoint [0.0, 23.5] sits at index 3 and 9 of the extended array.
-s_start = s_ext(3);
-s_end   = s_ext(9);
+% Center lap starts at the gate of Lap 2 and ends at the gate of Lap 3
+s_start = s_ext(num_base_pts + 1);
+s_end   = s_ext(2 * num_base_pts + 1);
 
-% Create a dense interpolation over the ENTIRE extended array
-N_ext = 300; 
+N_ext = 600; 
 s_interp_ext = linspace(s_ext(1), s_ext(end), N_ext);
 ref_x_raw = makima(s_ext, pts_ext(:,1), s_interp_ext)';
 ref_y_raw = makima(s_ext, pts_ext(:,2), s_interp_ext)';
 
-% Apply the smoothing filter to the extended array to eliminate boundary effects
 ref_x_smooth = smoothdata(ref_x_raw, 'gaussian', 15);
 ref_y_smooth = smoothdata(ref_y_raw, 'gaussian', 15);
 
-% Extract exactly one lap and resample to the requested N nodes
+dx_ext_dense = gradient(ref_x_smooth);
+dy_ext_dense = gradient(ref_y_smooth);
+psi_ext_dense = unwrap(atan2(dy_ext_dense, dx_ext_dense));
+
 N = nodes;
 s_lap = linspace(s_start, s_end, N);
 ref_path.x = interp1(s_interp_ext, ref_x_smooth, s_lap)';
 ref_path.y = interp1(s_interp_ext, ref_y_smooth, s_lap)';
+ref_path.psi = interp1(s_interp_ext, psi_ext_dense, s_lap)';
 
-% Calculate heading of reference line
-dx_ref = gradient(ref_path.x);
-dy_ref = gradient(ref_path.y);
-ref_path.psi = atan2(dy_ref, dx_ref);
+% Ensure exact machine-precision closure
+ref_path.x(end)   = ref_path.x(1);
+ref_path.y(end)   = ref_path.y(1);
+ref_path.psi(end) = ref_path.psi(1);
 
 %% 3. State Vector Initialization (CasADi)
 import casadi.*
@@ -85,7 +84,6 @@ v  = opti.variable(N, 1);       % Velocity (m/s)
 dt = opti.variable(N-1, 1);     % Time step (s)
 
 %% 4. Bounds and Track Limits
-% Pre-calculate track limits in standard MATLAB arrays
 lb_n = -8 * ones(N, 1);
 ub_n =  8 * ones(N, 1);
 
@@ -103,31 +101,39 @@ for i = 1:size(track_pts, 1)
     n_apex = (Px - ref_path.x(idx)) * nx + (Py - ref_path.y(idx)) * ny;
     
     chord_margin = 0.2; 
+    
+    % Periodic index neighbors
+    prev_idx = idx - 1;
+    if prev_idx < 1, prev_idx = N - 1; end
+    next_idx = idx + 1;
+    if next_idx > N, next_idx = 2; end
+    
     if is_CW
-        lb_n(idx) = n_apex + keepout + chord_margin;
-        if idx > 1, lb_n(idx-1) = n_apex + keepout; end
-        if idx < N, lb_n(idx+1) = n_apex + keepout; end
+        lb_n(idx)      = max(lb_n(idx), n_apex + keepout + chord_margin);
+        lb_n(prev_idx) = max(lb_n(prev_idx), n_apex + keepout);
+        lb_n(next_idx) = max(lb_n(next_idx), n_apex + keepout);
+        if idx == 1, lb_n(N) = lb_n(1); end
+        if idx == N, lb_n(1) = lb_n(N); end
     else
-        ub_n(idx) = n_apex - keepout - chord_margin;
-        if idx > 1, ub_n(idx-1) = n_apex - keepout; end
-        if idx < N, ub_n(idx+1) = n_apex - keepout; end
+        ub_n(idx)      = min(ub_n(idx), n_apex - keepout - chord_margin);
+        ub_n(prev_idx) = min(ub_n(prev_idx), n_apex - keepout);
+        ub_n(next_idx) = min(ub_n(next_idx), n_apex - keepout);
+        if idx == 1, ub_n(N) = ub_n(1); end
+        if idx == N, ub_n(1) = ub_n(N); end
     end
 end
 
-% Apply Bounds
 opti.subject_to(lb_n <= n <= ub_n);
 opti.subject_to(v >= 1.0);
 opti.subject_to(dt >= 0.01);
 
-% Initial Guesses
 opti.set_initial(n, zeros(N, 1));
 opti.set_initial(v, 10 * ones(N, 1));
 opti.set_initial(dt, 0.2 * ones(N-1, 1));
 
 %% 5. Objective & Nonlinear Constraints (CasADi)
-% Regularization weights (Scaled relative to the N=100 baseline)
 W_smooth = 0.05 * (N / 100); 
-W_vel_smooth = 0.005 * (N / 100);
+W_vel_smooth = 0.005 * (N / 100); 
 
 costFunc = sum(dt) ...
     + W_smooth * sumsqr(diff([n; n(1)])) ...
@@ -139,7 +145,7 @@ opti.minimize(costFunc);
 x = ref_path.x - n .* sin(ref_path.psi);
 y = ref_path.y + n .* cos(ref_path.psi);
 
-dx = diff(x); 
+dx = diff(x); % Length N-1
 dy = diff(y);
 ds = sqrt(dx.^2 + dy.^2); 
 
@@ -147,7 +153,7 @@ ds = sqrt(dx.^2 + dy.^2);
 v_avg = 0.5 * (v(1:N-1) + v(2:N));
 opti.subject_to(ds == v_avg .* dt);
 
-% 3. Flying Start (Periodic Boundary Conditions)
+% 3. Flying Start Periodic Boundary Conditions
 opti.subject_to(n(1) == n(N));
 opti.subject_to(v(1) == v(N));
 
@@ -159,30 +165,35 @@ dv_start = (v(2) - v(1)) / dt(1);
 dv_end   = (v(N) - v(N-1)) / dt(end);
 opti.subject_to(dv_start == dv_end);
 
-% 4. Curvature Calculation (AD-safe unwrapping)
-dx1 = dx(1:end-1); dy1 = dy(1:end-1);
-dx2 = dx(2:end);   dy2 = dy(2:end);
+% 4. Periodic Curvature Calculation (Covers Node 1 / Node N)
+dx_wrap = [dx(end); dx];
+dy_wrap = [dy(end); dy];
+ds_wrap = [ds(end); ds];
 
-% Dot and cross products allow continuous atan2 wrap-around without conditional logic
+dx1 = dx_wrap(1:end-1); dy1 = dy_wrap(1:end-1);
+dx2 = dx_wrap(2:end);   dy2 = dy_wrap(2:end);
+
 cross_p = dx1 .* dy2 - dy1 .* dx2;
 dot_p   = dx1 .* dx2 + dy1 .* dy2;
 dHeading = atan2(cross_p, dot_p);
 
-kappa = dHeading ./ ds(1:N-2); 
+ds_nodes = 0.5 * (ds_wrap(1:end-1) + ds_wrap(2:end));
+kappa = dHeading ./ ds_nodes; % Length N-1 (all unique nodes)
+
 opti.subject_to(-1/R_min <= kappa <= 1/R_min);
 
-% 5. Acceleration Constraints
-a_x_seg = diff(v) ./ dt; 
-a_x_nodes = 0.5 * (a_x_seg(1:end-1) + a_x_seg(2:end)); 
-a_y_nodes = (v(2:N-1).^2) .* kappa; 
+% 5. Periodic Acceleration Constraints
+a_x_seg = diff(v) ./ dt; % Length N-1
+a_x_nodes = 0.5 * ([a_x_seg(end); a_x_seg(1:end-1)] + a_x_seg); % Length N-1
+a_y_nodes = (v(1:N-1).^2) .* kappa; % Length N-1
 
 opti.subject_to(a_x_nodes.^2 + a_y_nodes.^2 <= A_lat^2);
 opti.subject_to(-A_long_brake <= a_x_nodes <= A_long_fwd);
 
-% 6. Jerk Constraints
-dt_nodes = 0.5 * (dt(1:end-1) + dt(2:end)); 
-j_x = diff(a_x_nodes) ./ dt_nodes(1:end-1); 
-j_y = diff(a_y_nodes) ./ dt_nodes(1:end-1); 
+% 6. Periodic Jerk Constraints
+dt_nodes = 0.5 * ([dt(end); dt(1:end-1)] + dt);
+j_x = diff([a_x_nodes; a_x_nodes(1)]) ./ dt_nodes;
+j_y = diff([a_y_nodes; a_y_nodes(1)]) ./ dt_nodes;
 
 opti.subject_to(-J_long <= j_x <= J_long);
 opti.subject_to(-J_lat <= j_y <= J_lat);
@@ -195,10 +206,8 @@ opti.solver('ipopt', p_opts, s_opts);
 disp('Executing CasADi/IPOPT solver...');
 sol = opti.solve();
 
-% Recalculate true lap time 
 true_lap_time = sum(sol.value(dt));
 fprintf('True Lap Time: %.3f s\n', true_lap_time);
-
 
 
 
@@ -242,15 +251,18 @@ j_y = diff(a_y_nodes) ./ dt_nodes(1:end-1);
 t_opt = [0; cumsum(dt_opt)]; % Calculate cumulative elapsed time
 
 % Calculate cumulative distance of the sparse optimal line
-s_opt = [0; cumsum(sqrt(diff(x_plot).^2 + diff(y_plot).^2))];
+s_opt_raw = [0; cumsum(sqrt(diff(x_plot).^2 + diff(y_plot).^2))];
+
+% Strip duplicate spatial nodes caused by the cyclic boundary closure
+[s_opt, unique_idx] = unique(s_opt_raw);
 
 % Target interpolation density (matches GPS log length)
 N_dense = rc_end_idx - rc_start_idx + 1;
 s_dense = linspace(0, s_opt(end), N_dense)';
 
 % Interpolate spatial coordinates
-x_plot_dense = interp1(s_opt, x_plot, s_dense, 'makima');
-y_plot_dense = interp1(s_opt, y_plot, s_dense, 'makima');
+x_plot_dense = interp1(s_opt, x_plot(unique_idx), s_dense, 'makima');
+y_plot_dense = interp1(s_opt, y_plot(unique_idx), s_dense, 'makima');
 
 % Fill boundary NaNs with nearest valid values to prevent NaN propagation
 t_clean     = fillmissing([t_opt; t_opt(end)], 'nearest');
@@ -260,6 +272,15 @@ ay_clean    = fillmissing([NaN; a_y_nodes; NaN; NaN], 'nearest');
 jx_clean    = fillmissing([NaN; NaN; j_x; NaN; NaN], 'nearest');
 jy_clean    = fillmissing([NaN; NaN; j_y; NaN; NaN], 'nearest');
 kappa_clean = fillmissing([NaN; kappa; NaN; NaN], 'nearest');
+
+% Apply unique index mask to kinematics before interpolating
+t_clean     = t_clean(unique_idx);
+v_clean     = v_clean(unique_idx);
+ax_clean    = ax_clean(unique_idx);
+ay_clean    = ay_clean(unique_idx);
+jx_clean    = jx_clean(unique_idx);
+jy_clean    = jy_clean(unique_idx);
+kappa_clean = kappa_clean(unique_idx);
 
 % Interpolate kinematics to the dense array
 hover_data.t     = interp1(s_opt, t_clean, s_dense, 'makima');
