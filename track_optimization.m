@@ -17,7 +17,7 @@ R_min = 2.0;
 % P1 and P2 define the start/finish gate (X=0 cross-section)
 
 t_race_cw = [
-    0.0,   27.0,  0.4, -1;  % P1 (Outer boundary rounding the top)
+    0.0,   30.0,  0.4, -1;  % P1 (Outer boundary rounding the top)
     0.0,   20.0,  0.4,  1;  % P2 (Inner boundary rounding the top)
     10.0,   20.0,  0.4,  1;  % P3
     5.0,   14.0,  0.4, -1;  % P4
@@ -27,6 +27,7 @@ t_race_cw = [
     ];
 
 track_pts = t_race_cw;
+nodes = 500;
 
 % Telemetry Trimming
 rc_start_idx = 178;
@@ -64,7 +65,7 @@ ref_x_smooth = smoothdata(ref_x_raw, 'gaussian', 15);
 ref_y_smooth = smoothdata(ref_y_raw, 'gaussian', 15);
 
 % Extract exactly one lap and resample to the requested N nodes
-N = 100;
+N = nodes;
 s_lap = linspace(s_start, s_end, N);
 ref_path.x = interp1(s_interp_ext, ref_x_smooth, s_lap)';
 ref_path.y = interp1(s_interp_ext, ref_y_smooth, s_lap)';
@@ -124,8 +125,9 @@ opti.set_initial(v, 10 * ones(N, 1));
 opti.set_initial(dt, 0.2 * ones(N-1, 1));
 
 %% 5. Objective & Nonlinear Constraints (CasADi)
-W_smooth = 0.05; 
-W_vel_smooth = 0.005; 
+% Regularization weights (Scaled relative to the N=100 baseline)
+W_smooth = 0.05 * (N / 100); 
+W_vel_smooth = 0.005 * (N / 100);
 
 costFunc = sum(dt) ...
     + W_smooth * sumsqr(diff([n; n(1)])) ...
