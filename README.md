@@ -30,7 +30,7 @@ The reference path is discretized into $N$ nodes. The optimization formulation r
 By leveraging Algorithmic Differentiation (AD), the solver computes exact gradients and constructs the constraint Jacobian and Hessian as sparse matrices. This eliminates numerical finite-difference errors and reduces the linear system solve complexity at each iteration from $O(N^3)$ to approximately $O(N)$.
 
 - $N=100$ provides near-instant convergence for simple layouts.
-- $N=500+$ is viable for larger, complex circuits without exponential performance degradation.
+- $N=500$ is viable for larger, complex circuits without exponential performance degradation.
 - Interpolation can fill out the missing comparison points between the nodes so that for the comparison the distance between optimal points on the line and points recorded in the GPS log is minimized.
 
 ## Custom Tracks
