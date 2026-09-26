@@ -23,14 +23,15 @@ The repository includes the T-Race track geometry ([t-raceglobal.com](https://t-
 - Translation: Apply an offset if the rotated telemetry is spatially shifted from the Cartesian origin. Tight lines typically require minimal to no translation.
 - Trimming: Adjust start_idx and end_idx so the telemetry array begins exactly at the finish line. This synchronizes the distance parameter, which is strictly required for the time delta calculations to function correctly.
 
-## Solver Limitations
+## Solver Implementation
 
-The reference path is discretized into $N$ nodes. The current formulation relies on MATLAB's fmincon function using the SQP algorithm. Because the constraint Jacobian is treated as a dense matrix, the linear system solve required at each iteration scales at $O(N^3)$ computational complexity.
-- $N=100$ provides rapid convergence.
-- $N=150$ represents the practical limit for this dense formulation.
-  
-Applying this codebase to larger, complex circuits where extra resolution would be required will require migrating to an interior-point solver with a sparse, analytically defined Jacobian, or utilizing a specialized optimal control framework.
+The reference path is discretized into $N$ nodes. The optimization formulation relies on the CasADi framework utilizing the IPOPT interior-point solver.
 
+By leveraging Algorithmic Differentiation (AD), the solver computes exact gradients and constructs the constraint Jacobian and Hessian as sparse matrices. This eliminates numerical finite-difference errors and reduces the linear system solve complexity at each iteration from $O(N^3)$ to approximately $O(N)$.
+
+- $N=100$ provides near-instant convergence for simple layouts.
+- $N=500+$ is viable for larger, complex circuits without exponential performance degradation.
+- Interpolation can fill out the missing comparison points between the nodes so that for the comparison the distance between optimal points on the line and points recorded in the GPS log is minimized.
 
 ## Custom Tracks
 
