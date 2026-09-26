@@ -35,4 +35,4 @@ By leveraging Algorithmic Differentiation (AD), the solver computes exact gradie
 
 ## Custom Tracks
 
-Simple custom track layouts can be implemented by defining the coordinates inside the track_pts matrix. The section between P1 and P2 represents the finish line, the rest of the points define the remaining apexes. For tracks where the corner has a nonzero radii, a keepout circle shall be defined around the center point of the apex.
+Simple custom track layouts can be implemented by defining the coordinates inside the track_selection function at the bottom of the file. The section between P1 and P2 represents the finish line, the rest of the points define the remaining apexes. For tracks where the corner has a nonzero radii, a keepout circle shall be defined around the center point of the apex.
