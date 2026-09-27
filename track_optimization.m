@@ -1,8 +1,13 @@
 % Racing Line and Lap Time Optimization using CasADi
 clear; clc; close all;
+% Run this command first
+% addpath('<yourpath>/casadi-3.8.1-windows64-matlab2018b')
+% addpath('D:\Downloads/casadi-3.8.1-windows64-matlab2018b')
+
 
 %% 1. Parameters and Constraints
 g = 9.81; % m/s^2
+%% 
 
 % Vehicle Limits
 A_lat = 1.5 * g;
@@ -462,6 +467,147 @@ p_gps = patch([x_rc; NaN], [y_rc; NaN], [G_long_rc; NaN], ...
 lgd = legend([h_center, h_opt_dummy, h_fin, h_right, h_left, h_gps_dummy], ...
     {'Centerline', 'Optimal Line', 'Finish Line', 'Right Apex', 'Left Apex', 'GPS'}, ...
     'Location', 'southeast');
+
+
+%% 9. Speed Traps
+% --- Speed Annotations (Min/Max/Trap) ---
+
+% 1. Optimal Line Extrema (Green - Pushed OUTSIDE the track)
+[opt_max_v, opt_max_idx] = findpeaks(v_opt);
+[opt_min_v, opt_min_idx] = findpeaks(-v_opt);
+opt_min_v = -opt_min_v;
+
+% Filter out peaks near the start/finish line to prevent overlapping the trap
+margin = 5; 
+valid_max = (opt_max_idx > margin) & (opt_max_idx < N - margin);
+opt_max_idx = opt_max_idx(valid_max);
+opt_max_v = opt_max_v(valid_max);
+
+valid_min = (opt_min_idx > margin) & (opt_min_idx < N - margin);
+opt_min_idx = opt_min_idx(valid_min);
+opt_min_v = opt_min_v(valid_min);
+
+for i = 1:length(opt_max_idx)
+    idx = opt_max_idx(i);
+    x0 = x_opt(idx); y0 = y_opt(idx);
+    
+    % Calculate perpendicular normal vector
+    idx_f = min(idx+1, length(x_opt)); idx_b = max(idx-1, 1);
+    dx = x_opt(idx_f) - x_opt(idx_b); dy = y_opt(idx_f) - y_opt(idx_b);
+    L = sqrt(dx^2 + dy^2); if L==0, L=1; end
+    nx = -dy/L; ny = dx/L; % Left of path (Outside)
+    ox = 3.5 * nx; oy = 3.5 * ny; 
+    
+    plot(x0, y0, 'o', 'MarkerFaceColor', [0 0.8 0], 'MarkerEdgeColor', 'w', 'MarkerSize', 4, 'HandleVisibility', 'off');
+    plot([x0, x0+ox], [y0, y0+oy], '--', 'Color', [0 0.8 0], 'LineWidth', 0.5, 'HandleVisibility', 'off');
+    text(x0+ox, y0+oy, sprintf('%.0f', opt_max_v(i)*3.6), ...
+        'BackgroundColor', [0.1 0.3 0.1], 'Color', 'w', 'EdgeColor', [0 0.8 0], ...
+        'FontSize', 8, 'Margin', 2, 'HorizontalAlignment', 'center');
+end
+
+for i = 1:length(opt_min_idx)
+    idx = opt_min_idx(i);
+    x0 = x_opt(idx); y0 = y_opt(idx);
+    
+    idx_f = min(idx+1, length(x_opt)); idx_b = max(idx-1, 1);
+    dx = x_opt(idx_f) - x_opt(idx_b); dy = y_opt(idx_f) - y_opt(idx_b);
+    L = sqrt(dx^2 + dy^2); if L==0, L=1; end
+    nx = -dy/L; ny = dx/L; 
+    ox = 3.5 * nx; oy = 3.5 * ny; 
+    
+    plot(x0, y0, 'o', 'MarkerFaceColor', [0 0.8 0], 'MarkerEdgeColor', 'w', 'MarkerSize', 4, 'HandleVisibility', 'off');
+    plot([x0, x0+ox], [y0, y0+oy], '--', 'Color', [0 0.8 0], 'LineWidth', 0.5, 'HandleVisibility', 'off');
+    text(x0+ox, y0+oy, sprintf('%.0f', opt_min_v(i)*3.6), ...
+        'BackgroundColor', [0.1 0.3 0.1], 'Color', 'w', 'EdgeColor', [0 0.8 0], ...
+        'FontSize', 8, 'Margin', 2, 'HorizontalAlignment', 'center');
+end
+
+% 2. GPS Line Extrema (Red - Pushed INSIDE the track)
+v_gps_sm = smoothdata(rc_hover.v, 'gaussian', 20);
+[~, gps_max_idx] = findpeaks(v_gps_sm, 'MinPeakProminence', 1);
+[~, gps_min_idx] = findpeaks(-v_gps_sm, 'MinPeakProminence', 1);
+
+for i = 1:length(gps_max_idx)
+    idx = gps_max_idx(i);
+    x0 = x_rc(idx); y0 = y_rc(idx);
+    
+    idx_f = min(idx+5, length(x_rc)); idx_b = max(idx-5, 1);
+    dx = x_rc(idx_f) - x_rc(idx_b); dy = y_rc(idx_f) - y_rc(idx_b);
+    L = sqrt(dx^2 + dy^2); if L==0, L=1; end
+    nx = dy/L; ny = -dx/L; % Right of path (Inside)
+    ox = 3.5 * nx; oy = 3.5 * ny; 
+    
+    plot(x0, y0, 'o', 'MarkerFaceColor', [0.8 0 0], 'MarkerEdgeColor', 'w', 'MarkerSize', 4, 'HandleVisibility', 'off');
+    plot([x0, x0+ox], [y0, y0+oy], '--', 'Color', [0.8 0 0], 'LineWidth', 0.5, 'HandleVisibility', 'off');
+    text(x0+ox, y0+oy, sprintf('%.0f', rc_hover.v(idx)*3.6), ...
+        'BackgroundColor', [0.3 0.1 0.1], 'Color', 'w', 'EdgeColor', [0.8 0 0], ...
+        'LineStyle', '--', 'FontSize', 8, 'Margin', 2, 'HorizontalAlignment', 'center');
+end
+
+for i = 1:length(gps_min_idx)
+    idx = gps_min_idx(i);
+    x0 = x_rc(idx); y0 = y_rc(idx);
+    
+    idx_f = min(idx+5, length(x_rc)); idx_b = max(idx-5, 1);
+    dx = x_rc(idx_f) - x_rc(idx_b); dy = y_rc(idx_f) - y_rc(idx_b);
+    L = sqrt(dx^2 + dy^2); if L==0, L=1; end
+    nx = dy/L; ny = -dx/L; 
+    ox = 3.5 * nx; oy = 3.5 * ny;
+    
+    plot(x0, y0, 'o', 'MarkerFaceColor', [0.8 0 0], 'MarkerEdgeColor', 'w', 'MarkerSize', 4, 'HandleVisibility', 'off');
+    plot([x0, x0+ox], [y0, y0+oy], '--', 'Color', [0.8 0 0], 'LineWidth', 0.5, 'HandleVisibility', 'off');
+    text(x0+ox, y0+oy, sprintf('%.0f', rc_hover.v(idx)*3.6), ...
+        'BackgroundColor', [0.3 0.1 0.1], 'Color', 'w', 'EdgeColor', [0.8 0 0], ...
+        'LineStyle', '--', 'FontSize', 8, 'Margin', 2, 'HorizontalAlignment', 'center');
+end
+
+% 3. Trap Speeds (Start/Finish Line & GPS Extents)
+% Optimal Trap
+x0 = x_opt(1); y0 = y_opt(1);
+ox = 0; oy = 3; % Push rigidly Up
+plot(x0, y0, 'o', 'MarkerFaceColor', [0 0.8 0], 'MarkerEdgeColor', 'w', 'MarkerSize', 4, 'HandleVisibility', 'off');
+plot([x0, x0+ox], [y0, y0+oy], '--', 'Color', [0 0.8 0], 'LineWidth', 0.5, 'HandleVisibility', 'off');
+text(x0+ox, y0+oy, sprintf('%.0f', v_opt(1)*3.6), ...
+    'BackgroundColor', [0.1 0.3 0.1], 'Color', 'w', 'EdgeColor', [0 0.8 0], ...
+    'FontSize', 8, 'Margin', 2, 'HorizontalAlignment', 'center');
+
+% GPS First Data Point (45 degrees forward and inward)
+x0 = x_rc(1); y0 = y_rc(1);
+idx_f = min(6, length(x_rc)); 
+dx = x_rc(idx_f) - x_rc(1); dy = y_rc(idx_f) - y_rc(1);
+L = sqrt(dx^2 + dy^2); if L==0, L=1; end
+tx = dx/L; ty = dy/L;  % Lap direction
+nx = dy/L; ny = -dx/L; % Inward direction
+ox = 3.5 * (tx + nx) / sqrt(2); 
+oy = 3.5 * (ty + ny) / sqrt(2);
+
+plot(x0, y0, 'o', 'MarkerFaceColor', [0.8 0 0], 'MarkerEdgeColor', 'w', 'MarkerSize', 4, 'HandleVisibility', 'off');
+plot([x0, x0+ox], [y0, y0+oy], '--', 'Color', [0.8 0 0], 'LineWidth', 0.5, 'HandleVisibility', 'off');
+text(x0+ox, y0+oy, sprintf('%.0f', rc_hover.v(1)*3.6), ...
+    'BackgroundColor', [0.3 0.1 0.1], 'Color', 'w', 'EdgeColor', [0.8 0 0], 'LineStyle', '--', ...
+    'FontSize', 8, 'Margin', 2, 'HorizontalAlignment', 'center');
+
+% GPS Last Data Point (45 degrees backward and inward)
+x0 = x_rc(end); y0 = y_rc(end);
+idx_b = max(length(x_rc)-5, 1);
+dx = x_rc(end) - x_rc(idx_b); dy = y_rc(end) - y_rc(idx_b);
+L = sqrt(dx^2 + dy^2); if L==0, L=1; end
+tx = dx/L; ty = dy/L;  % Lap direction
+nx = dy/L; ny = -dx/L; % Inward direction
+ox = 3.5 * (-tx + nx) / sqrt(2); 
+oy = 3.5 * (-ty + ny) / sqrt(2);
+
+plot(x0, y0, 'o', 'MarkerFaceColor', [0.8 0 0], 'MarkerEdgeColor', 'w', 'MarkerSize', 4, 'HandleVisibility', 'off');
+plot([x0, x0+ox], [y0, y0+oy], '--', 'Color', [0.8 0 0], 'LineWidth', 0.5, 'HandleVisibility', 'off');
+text(x0+ox, y0+oy, sprintf('%.0f', rc_hover.v(end)*3.6), ...
+    'BackgroundColor', [0.3 0.1 0.1], 'Color', 'w', 'EdgeColor', [0.8 0 0], 'LineStyle', '--', ...
+    'FontSize', 8, 'Margin', 2, 'HorizontalAlignment', 'center');
+
+% ----------------------------------------
+
+
+
+%% Cursor, comparison box, title
 
 % Disable default data cursor mode
 datacursormode(gcf, 'off');
