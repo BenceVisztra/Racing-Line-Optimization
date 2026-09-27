@@ -11,21 +11,21 @@ g = 9.81; % m/s^2
 
 % Vehicle Limits
 A_lat = 1.5 * g;
-A_long_fwd = 0.6 * g;
-A_long_brake = 0.6 * g;
+A_long_fwd = 0.55 * g;
+A_long_brake = 0.55 * g;
 J_long = 1.5 * g;
 R_min = 2.0;
 
 % Dynamic Lateral Jerk Parameters
 lat_jerk_max = 4.0 * g;
-lat_jerk_min = 1.0 * g;
+lat_jerk_min = 1.5 * g;
 speed_lat_jerk_min = 20.0 / 3.6; % km/h (Highest jerk allowed below this speed)
 speed_lat_jerk_max = 45.0 / 3.6; % km/h (Lowest jerk allowed above this speed)
 
 % Import Data
 rc_data = readtable('racechrono_ts_11_96.csv');
 % Telemetry Rotation
-theta = 3.697; % radians %3.665 for 12.09
+theta = 3.697; % radians %3.665 for 12.09; 3.697 for 11.96
 % Telemetry Translation
 translate_x = 0;
 translate_y = -20.5;
@@ -33,7 +33,7 @@ translate_y = -20.5;
 rc_start_idx = 193;
 rc_end_idx = 734;
 
-% Solver Nodes (recommended at least ~1 node/m for tracks with a tight hairpin)
+% Solver Nodes (recommended at least ~1 node/m for tracks with a tight hairpin (2.5m radius))
 % Above 500 nodes you might have trouble running the simulation.
 nodes = 120;
 
@@ -383,8 +383,8 @@ clf;
 
 % Setup Centerline and Dummy Lines for Legend
 h_center = plot(ref_path.x, ref_path.y, 'k--', 'DisplayName', 'Centerline'); hold on;
-h_opt_dummy = plot(NaN, NaN, 'w--', 'LineWidth', 2);
-h_gps_dummy = plot(NaN, NaN, 'w-', 'LineWidth', 2);
+h_opt_dummy = plot(NaN, NaN, 'Color', [1, 1, 0], 'LineStyle', '--', 'LineWidth', 2);
+h_gps_dummy = plot(NaN, NaN, 'Color', [1, 1, 0], 'LineStyle', '-', 'LineWidth', 2);
 
 % Draw thin dashed white line between finish points
 plot([track_pts(1,1), track_pts(2,1)], [track_pts(1,2), track_pts(2,2)], ...
@@ -401,6 +401,48 @@ h_right = scatter(track_pts(idx_right, 1), track_pts(idx_right, 2), 50, [0.2, 0.
 % 3. Left-hand Apexes (CCW = -1)
 idx_left = find(track_pts(3:end, 4) == -1) + 2;
 h_left = scatter(track_pts(idx_left, 1), track_pts(idx_left, 2), 50, [1, 0, 1], 'filled', 'DisplayName', 'Left Apex');
+
+
+% --- Delta Time Track Ribbon ---
+% Calculate smooth normal vectors for the dense optimal line
+dx_dense = gradient(x_plot_dense);
+dy_dense = gradient(y_plot_dense);
+L_dense = sqrt(dx_dense.^2 + dy_dense.^2);
+nx_dense = -dy_dense ./ L_dense;
+ny_dense = dx_dense ./ L_dense;
+
+% Define 2m wide ribbon (+1m and -1m from centerline)
+X_ribbon = [x_plot_dense - 1.5*nx_dense, x_plot_dense + 1.5*nx_dense]';
+Y_ribbon = [y_plot_dense - 1.5*ny_dense, y_plot_dense + 1.5*ny_dense]';
+Z_ribbon = zeros(size(X_ribbon)); 
+
+% Extract unique GPS spatial data for interpolation
+s_rc_raw_temp = [0; cumsum(ds_rc)];
+[s_rc_clean_temp, u_idx] = unique(s_rc_raw_temp);
+v_gps_clean = v_rc(u_idx);
+
+% Calculate spatial delta time rate (s/m)
+v_gps_dense = interp1(s_rc_clean_temp, v_gps_clean, s_dense, 'linear', 'extrap');
+v_gps_dense(v_gps_dense < 1) = 1; % Prevent division by zero at standstill
+delta_rate = (1 ./ v_gps_dense) - (1 ./ hover_data.v);
+
+% Map delta rate explicitly to RGB arrays
+% Positive (losing time) -> Red, Negative (gaining/neutral) -> Green
+rate_norm = max(min(delta_rate / 0.015, 1), -1); 
+R_rib = 0.15 + 0.65 * (rate_norm > 0) .* rate_norm; 
+G_rib = 0.15 + 0.65 * (rate_norm < 0) .* abs(rate_norm); 
+B_rib = 0.15 * ones(size(rate_norm));
+
+% Construct the 3D RGB matrix for the surface
+C_ribbon = zeros(2, length(s_dense), 3);
+C_ribbon(1, :, 1) = R_rib; C_ribbon(1, :, 2) = G_rib; C_ribbon(1, :, 3) = B_rib;
+C_ribbon(2, :, :) = C_ribbon(1, :, :); % Copy colors to both edges of the ribbon
+
+% Plot the colored ribbon under the telemetry lines
+surf(X_ribbon, Y_ribbon, Z_ribbon, C_ribbon, ...
+    'EdgeColor', 'none', 'FaceAlpha', 0.4, 'HandleVisibility', 'off');
+
+
 
 % 1. Color Mapping
 % Calculate longitudinal G-force for the color mapping
@@ -448,7 +490,7 @@ xlabel('X (m)'); ylabel('Y (m)');
 R_actual_min = min(1 ./ abs(kappa));
 
 % Construct the parameter string
-param_str = sprintf('Vehicle Limits:\nA_{lat}: %.1f G\nA_{long, fwd}: %.1f G\nA_{long, brake}: %.1f G\nJ_{lat}: %.1f-%.1f G/s\nV(J_{lat}): %.0f-%.0f km/h\nJ_{long}: %.1f G/s\nR_{min, actual}: %.2f m', ...
+param_str = sprintf('Vehicle Limits:\nA_{lat}: %.2f G\nA_{long, fwd}: %.2f G\nA_{long, brake}: %.2f G\nJ_{lat}: %.1f-%.1f G/s\nV(J_{lat}): %.0f-%.0f km/h\nJ_{long}: %.1f G/s\nR_{min, actual}: %.2f m', ...
     A_lat/g, A_long_fwd/g, A_long_brake/g, lat_jerk_max/g, lat_jerk_min/g, speed_lat_jerk_min*3.6, speed_lat_jerk_max*3.6, J_long/g, R_actual_min);
 
 % Create the text box using data units
