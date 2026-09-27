@@ -13,9 +13,14 @@ g = 9.81; % m/s^2
 A_lat = 1.5 * g;
 A_long_fwd = 0.6 * g;
 A_long_brake = 0.6 * g;
-J_lat = 4.0 * g;
 J_long = 1.5 * g;
 R_min = 2.0;
+
+% Dynamic Lateral Jerk Parameters
+lat_jerk_max = 4.0 * g;
+lat_jerk_min = 1.0 * g;
+speed_lat_jerk_min = 20.0 / 3.6; % km/h (Highest jerk allowed below this speed)
+speed_lat_jerk_max = 45.0 / 3.6; % km/h (Lowest jerk allowed above this speed)
 
 % Import Data
 rc_data = readtable('racechrono_ts_11_96.csv');
@@ -204,9 +209,18 @@ j_x = diff([a_x_nodes; a_x_nodes(1)]) ./ dt_nodes;
 j_y = diff([a_y_nodes; a_y_nodes(1)]) ./ dt_nodes;
 
 opti.subject_to(-J_long <= j_x <= J_long);
-opti.subject_to(-J_lat <= j_y <= J_lat);
 
-% Solver Options & Execution
+% Interpolate velocity to the nodes to match j_y dimension (N-1)
+v_nodes = 0.5 * ([v(end); v(1:end-1)] + v);
+v_clamp = fmax(speed_lat_jerk_min, fmin(speed_lat_jerk_max, v_nodes(1:N-1)));
+
+% Dynamic Lateral Jerk based on velocity
+jerk_slope = (lat_jerk_min - lat_jerk_max) / (speed_lat_jerk_max - speed_lat_jerk_min);
+J_lat_dynamic = lat_jerk_max + jerk_slope * (v_clamp - speed_lat_jerk_min);
+
+opti.subject_to(-J_lat_dynamic <= j_y <= J_lat_dynamic);
+
+% 7. Solver Options & Execution
 p_opts = struct('expand', true);
 s_opts = struct('max_iter', 2000, 'tol', 1e-6);
 opti.solver('ipopt', p_opts, s_opts);
@@ -434,8 +448,8 @@ xlabel('X (m)'); ylabel('Y (m)');
 R_actual_min = min(1 ./ abs(kappa));
 
 % Construct the parameter string
-param_str = sprintf('Vehicle Limits:\nA_{lat}: %.1f G\nA_{long, fwd}: %.1f G\nA_{long, brake}: %.1f G\nJ_{lat}: %.1f G/s\nJ_{long}: %.1f G/s\nR_{min, actual}: %.2f m', ...
-    A_lat/g, A_long_fwd/g, A_long_brake/g, J_lat/g, J_long/g, R_actual_min);
+param_str = sprintf('Vehicle Limits:\nA_{lat}: %.1f G\nA_{long, fwd}: %.1f G\nA_{long, brake}: %.1f G\nJ_{lat}: %.1f-%.1f G/s\nV(J_{lat}): %.0f-%.0f km/h\nJ_{long}: %.1f G/s\nR_{min, actual}: %.2f m', ...
+    A_lat/g, A_long_fwd/g, A_long_brake/g, lat_jerk_max/g, lat_jerk_min/g, speed_lat_jerk_min*3.6, speed_lat_jerk_max*3.6, J_long/g, R_actual_min);
 
 % Create the text box using data units
 text(-36, 22, param_str, 'Units', 'data', ...
@@ -496,7 +510,7 @@ for i = 1:length(opt_max_idx)
     dx = x_opt(idx_f) - x_opt(idx_b); dy = y_opt(idx_f) - y_opt(idx_b);
     L = sqrt(dx^2 + dy^2); if L==0, L=1; end
     nx = -dy/L; ny = dx/L; % Left of path (Outside)
-    ox = 3.5 * nx; oy = 3.5 * ny; 
+    ox = 2.625 * nx; oy = 2.625 * ny; 
     
     plot(x0, y0, 'o', 'MarkerFaceColor', [0 0.8 0], 'MarkerEdgeColor', 'w', 'MarkerSize', 4, 'HandleVisibility', 'off');
     plot([x0, x0+ox], [y0, y0+oy], '--', 'Color', [0 0.8 0], 'LineWidth', 0.5, 'HandleVisibility', 'off');
@@ -513,7 +527,7 @@ for i = 1:length(opt_min_idx)
     dx = x_opt(idx_f) - x_opt(idx_b); dy = y_opt(idx_f) - y_opt(idx_b);
     L = sqrt(dx^2 + dy^2); if L==0, L=1; end
     nx = -dy/L; ny = dx/L; 
-    ox = 3.5 * nx; oy = 3.5 * ny; 
+    ox = 2.625 * nx; oy = 2.625 * ny; 
     
     plot(x0, y0, 'o', 'MarkerFaceColor', [0 0.8 0], 'MarkerEdgeColor', 'w', 'MarkerSize', 4, 'HandleVisibility', 'off');
     plot([x0, x0+ox], [y0, y0+oy], '--', 'Color', [0 0.8 0], 'LineWidth', 0.5, 'HandleVisibility', 'off');
@@ -535,7 +549,7 @@ for i = 1:length(gps_max_idx)
     dx = x_rc(idx_f) - x_rc(idx_b); dy = y_rc(idx_f) - y_rc(idx_b);
     L = sqrt(dx^2 + dy^2); if L==0, L=1; end
     nx = dy/L; ny = -dx/L; % Right of path (Inside)
-    ox = 3.5 * nx; oy = 3.5 * ny; 
+    ox = 2.625 * nx; oy = 2.625 * ny; 
     
     plot(x0, y0, 'o', 'MarkerFaceColor', [0.8 0 0], 'MarkerEdgeColor', 'w', 'MarkerSize', 4, 'HandleVisibility', 'off');
     plot([x0, x0+ox], [y0, y0+oy], '--', 'Color', [0.8 0 0], 'LineWidth', 0.5, 'HandleVisibility', 'off');
@@ -552,7 +566,7 @@ for i = 1:length(gps_min_idx)
     dx = x_rc(idx_f) - x_rc(idx_b); dy = y_rc(idx_f) - y_rc(idx_b);
     L = sqrt(dx^2 + dy^2); if L==0, L=1; end
     nx = dy/L; ny = -dx/L; 
-    ox = 3.5 * nx; oy = 3.5 * ny;
+    ox = 2.625 * nx; oy = 2.625 * ny;
     
     plot(x0, y0, 'o', 'MarkerFaceColor', [0.8 0 0], 'MarkerEdgeColor', 'w', 'MarkerSize', 4, 'HandleVisibility', 'off');
     plot([x0, x0+ox], [y0, y0+oy], '--', 'Color', [0.8 0 0], 'LineWidth', 0.5, 'HandleVisibility', 'off');
@@ -564,7 +578,7 @@ end
 % 3. Trap Speeds (Start/Finish Line & GPS Extents)
 % Optimal Trap
 x0 = x_opt(1); y0 = y_opt(1);
-ox = 0; oy = 3; % Push rigidly Up
+ox = 0; oy = 2.25; % Push rigidly Up
 plot(x0, y0, 'o', 'MarkerFaceColor', [0 0.8 0], 'MarkerEdgeColor', 'w', 'MarkerSize', 4, 'HandleVisibility', 'off');
 plot([x0, x0+ox], [y0, y0+oy], '--', 'Color', [0 0.8 0], 'LineWidth', 0.5, 'HandleVisibility', 'off');
 text(x0+ox, y0+oy, sprintf('%.0f', v_opt(1)*3.6), ...
@@ -578,8 +592,8 @@ dx = x_rc(idx_f) - x_rc(1); dy = y_rc(idx_f) - y_rc(1);
 L = sqrt(dx^2 + dy^2); if L==0, L=1; end
 tx = dx/L; ty = dy/L;  % Lap direction
 nx = dy/L; ny = -dx/L; % Inward direction
-ox = 3.5 * (tx + nx) / sqrt(2); 
-oy = 3.5 * (ty + ny) / sqrt(2);
+ox = 2.625 * (tx + nx) / sqrt(2); 
+oy = 2.625 * (ty + ny) / sqrt(2);
 
 plot(x0, y0, 'o', 'MarkerFaceColor', [0.8 0 0], 'MarkerEdgeColor', 'w', 'MarkerSize', 4, 'HandleVisibility', 'off');
 plot([x0, x0+ox], [y0, y0+oy], '--', 'Color', [0.8 0 0], 'LineWidth', 0.5, 'HandleVisibility', 'off');
@@ -594,8 +608,8 @@ dx = x_rc(end) - x_rc(idx_b); dy = y_rc(end) - y_rc(idx_b);
 L = sqrt(dx^2 + dy^2); if L==0, L=1; end
 tx = dx/L; ty = dy/L;  % Lap direction
 nx = dy/L; ny = -dx/L; % Inward direction
-ox = 3.5 * (-tx + nx) / sqrt(2); 
-oy = 3.5 * (-ty + ny) / sqrt(2);
+ox = 2.625 * (-tx + nx) / sqrt(2); 
+oy = 2.625 * (-ty + ny) / sqrt(2);
 
 plot(x0, y0, 'o', 'MarkerFaceColor', [0.8 0 0], 'MarkerEdgeColor', 'w', 'MarkerSize', 4, 'HandleVisibility', 'off');
 plot([x0, x0+ox], [y0, y0+oy], '--', 'Color', [0.8 0 0], 'LineWidth', 0.5, 'HandleVisibility', 'off');
@@ -607,13 +621,13 @@ text(x0+ox, y0+oy, sprintf('%.0f', rc_hover.v(end)*3.6), ...
 
 
 
-%% Cursor, comparison box, title
+%% 10. Cursor, Comparison box, Title
 
 % Disable default data cursor mode
 datacursormode(gcf, 'off');
 
 % Create fixed HUD box in the bottom-left corner
-text(0.02, 0.02, 'Hover over track to load telemetry...', ...
+text(0.02, 0.02, 'Hover over track to load telemetry comparison...', ...
     'Units', 'normalized', ...
     'VerticalAlignment', 'bottom', ...
     'BackgroundColor', [0.15 0.15 0.15], ...
@@ -637,7 +651,7 @@ title(sprintf('[%s] Optimal Line (%.2fs | %.1fm) vs GPS (%.2fs | %.1fm)', ...
 
 
 
-%% Background HUD Update Function
+%% 11. Background HUD Update Function
 function hud_update_callback(fig, ~)
     ax = findobj(fig, 'Type', 'Axes');
     if isempty(ax), return; end
@@ -667,7 +681,7 @@ function hud_update_callback(fig, ~)
 
     % If cursor is far away from the track, clear the data
     if min_d_opt > 3 && min_d_gps > 3
-        hud.String = 'Hover over track to load telemetry...';
+        hud.String = 'Hover over track to load telemetry comparison...';
         return;
     end
 
@@ -701,7 +715,7 @@ end
 
 
 
-%% Track Selection Helper
+%% 12. Track Selection Helper
 
 % Track Definition
 % Format: [X, Y, Keepout, Direction (1=CW, -1=CCW)]
