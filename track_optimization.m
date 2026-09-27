@@ -356,20 +356,32 @@ hover_data.jy    = interp1(s_opt, jy_clean, s_dense, 'makima');
 hover_data.kappa = interp1(s_opt, kappa_clean, s_dense, 'makima');
 
 
-%% 8.Plot Results
+%% 8. Plot Results
 % Create or update Figure 1, force docking, and clear previous run data
-
 figure(1);
 set(gcf, 'WindowStyle', 'docked');
 clf; 
 
-
-% Setup Legend
+% Setup Centerline and Dummy Lines for Legend
 h_center = plot(ref_path.x, ref_path.y, 'k--', 'DisplayName', 'Centerline'); hold on;
 h_opt_dummy = plot(NaN, NaN, 'w--', 'LineWidth', 2);
-h_apex = scatter(track_pts(:,1), track_pts(:,2), 50, 'm', 'filled', 'DisplayName', 'Track Apexes');
 h_gps_dummy = plot(NaN, NaN, 'w-', 'LineWidth', 2);
 
+% Draw thin dashed white line between finish points
+plot([track_pts(1,1), track_pts(2,1)], [track_pts(1,2), track_pts(2,2)], ...
+    'w--', 'LineWidth', 1, 'HandleVisibility', 'off');
+
+% Plot Track Points Separately for Legend
+% 1. Finish Line Gates (Indices 1 & 2)
+h_fin = scatter(track_pts(1:2, 1), track_pts(1:2, 2), 50, [1, 1, 1], 'filled', 'DisplayName', 'Finish Line');
+
+% 2. Right-hand Apexes (CW = 1)
+idx_right = find(track_pts(3:end, 4) == 1) + 2;
+h_right = scatter(track_pts(idx_right, 1), track_pts(idx_right, 2), 50, [0.2, 0.2, 1], 'filled', 'DisplayName', 'Right Apex');
+
+% 3. Left-hand Apexes (CCW = -1)
+idx_left = find(track_pts(3:end, 4) == -1) + 2;
+h_left = scatter(track_pts(idx_left, 1), track_pts(idx_left, 2), 50, [1, 0, 1], 'filled', 'DisplayName', 'Left Apex');
 
 % 1. Color Mapping
 % Calculate longitudinal G-force for the color mapping
@@ -420,7 +432,7 @@ R_actual_min = min(1 ./ abs(kappa));
 param_str = sprintf('Vehicle Limits:\nA_{lat}: %.1f G\nA_{long, fwd}: %.1f G\nA_{long, brake}: %.1f G\nJ_{lat}: %.1f G/s\nJ_{long}: %.1f G/s\nR_{min, actual}: %.2f m', ...
     A_lat/g, A_long_fwd/g, A_long_brake/g, J_lat/g, J_long/g, R_actual_min);
 
-% Create the text box using data units and attach the drag callback
+% Create the text box using data units
 text(-36, 22, param_str, 'Units', 'data', ...
     'BackgroundColor', [0.15 0.15 0.15], ... 
     'Color', [0.9 0.9 0.9], ...              
@@ -428,13 +440,7 @@ text(-36, 22, param_str, 'Units', 'data', ...
     'Margin', 5, ...
     'Interpreter', 'tex');
 
-% Enable interactive data cursor
-dcm = datacursormode(gcf);
-dcm.Enable = 'on';
-dcm.UpdateFcn = @hover_callback;
-
-
-
+% GPS Telemetry Processing
 s_rc_raw = [0; cumsum(ds_rc)];
 [s_rc_clean, unique_idx] = unique(s_rc_raw);
 v_rc_clean = v_rc(unique_idx);
@@ -443,23 +449,19 @@ v_rc_interp = interp1(s_rc_clean, v_rc_clean, s_lap, 'linear', 'extrap');
 % Calculate longitudinal G-force for the color mapping
 G_long_rc = rc_hover.ax / 9.81;
 
-% Create a continuous colored dashed line for telemetry
+% Create a continuous colored solid line for telemetry
 p_gps = patch([x_rc; NaN], [y_rc; NaN], [G_long_rc; NaN], ...
     'FaceColor', 'none', ...
     'EdgeColor', 'interp', ...
+    'LineStyle', '-', ...
     'LineWidth', 2, ...
     'DisplayName', 'GPS', ...
     'UserData', rc_hover);
 
-
-% Generate the corrected legend using explicit handles and dummy lines
-lgd = legend;
-lgd.Position(1) = lgd.Position(1) - 0.02; 
-lgd.Position(2) = lgd.Position(2) - 0.45; 
-lgd = legend([h_center, h_opt_dummy, h_apex, h_gps_dummy], ...
-    {'Centerline', 'Optimal Line', 'Track Apexes', 'GPS'}, ...
+% Generate the corrected legend using explicit handles
+lgd = legend([h_center, h_opt_dummy, h_fin, h_right, h_left, h_gps_dummy], ...
+    {'Centerline', 'Optimal Line', 'Finish Line', 'Right Apex', 'Left Apex', 'GPS'}, ...
     'Location', 'southeast');
-
 
 % Disable default data cursor mode
 datacursormode(gcf, 'off');
@@ -477,7 +479,6 @@ text(0.02, 0.02, 'Hover over track to load telemetry...', ...
 
 % Bind the motion tracker to update the HUD continuously
 set(gcf, 'WindowButtonMotionFcn', @hud_update_callback);
-
 
 % Update figure title with comparative data and track name
 gps_lap_time = t_rc(end);
