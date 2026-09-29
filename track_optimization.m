@@ -25,23 +25,23 @@ speed_lat_jerk_min = 20.0 / 3.6; % km/h (Highest jerk allowed below this speed)
 speed_lat_jerk_max = 60.0 / 3.6; % km/h (Lowest jerk allowed above this speed)
 
 % Solver Nodes (recommended at least 1-5 node/m)
-nodes = 1500;
+nodes = 500;
 % Optimizer filters
 W_smooth = 0.001 * nodes; 
 W_vel_smooth = 0.00005 * nodes; 
 
 
 % Import Data
-rc_data = readtable(['gps_kartplanet_51_87.csv']); %gps_kartplanet_david_47_56 %gps_t_race_ts_11_96 %gps_kistarcsa_mojo_28_33
+rc_data = readtable('gps_kartplanet_david_47_56.csv'); %gps_kartplanet_david_47_56 %gps_t_race_ts_11_96 %gps_kistarcsa_mojo_28_33
 % Telemetry Rotation
-theta = 0; % radians %3.665 for 12.09; 3.697 for 11.96
+theta = 0; %5.268; % radians %3.665 for 12.09; 3.697 for 11.96
 
 
 % Track Definition
 track_name = 'track_kartplanet.csv';
 track_pts = track_selection(track_name);
 % Options:
-% T race CW
+% T race CW track_t_race_cw.csv
 % T race CCW
 % track_kartplanet.csv
 % track_kistarcsa.csv
@@ -52,42 +52,61 @@ P_max = P_motor * efficiency; % Effective power applied to track
 % Use the full continuous track directly
 pts_base = track_pts; 
 
-% Sanitize data: replace any NaNs caused by CSV formatting
+% Sanitize data: Catch missing columns AND entirely empty (NaN) columns
+if size(pts_base, 2) < 3, pts_base(:,3) = 2.0; end 
+if size(pts_base, 2) < 4, pts_base(:,4) = pts_base(:,3); end
+
+if all(isnan(pts_base(:,3))), pts_base(:,3) = 2.0; end
+if all(isnan(pts_base(:,4))), pts_base(:,4) = pts_base(:,3); end
+
 pts_base(:,3) = fillmissing(pts_base(:,3), 'nearest');
 pts_base(:,4) = fillmissing(pts_base(:,4), 'nearest');
-% Fallback if the entire 4th column was empty/unparseable
-if all(isnan(pts_base(:,4))), pts_base(:,4) = pts_base(:,3); end
 
 num_base_pts = size(pts_base, 1);
 
 % Replicate base track coordinates 3 times to ensure complete periodic symmetry
 pts_ext = repmat(pts_base(:, 1:2), 3, 1);
-pts_ext = [pts_ext; pts_base(1, 1:2)]; % Close trailing loop
+pts_ext = [pts_ext; pts_base(1, 1:2)]; 
+
+w_left_ext = repmat(pts_base(:,3), 3, 1);
+w_left_ext = [w_left_ext; pts_base(1, 3)];
+
+w_right_ext = repmat(pts_base(:,4), 3, 1);
+w_right_ext = [w_right_ext; pts_base(1, 4)];
 
 % Calculate cumulative distance of the extended track
 dx_ext = diff(pts_ext(:,1));
 dy_ext = diff(pts_ext(:,2));
 d_chord_ext = sqrt(dx_ext.^2 + dy_ext.^2);
+
+% FORCE STRICTLY MONOTONIC DISTANCES
+% If two track points are identical, add a microscopic distance to prevent interp1 from crashing
+d_chord_ext(d_chord_ext == 0) = 1e-6; 
 s_ext = [0; cumsum(d_chord_ext)];
 
 % Center lap starts at the beginning of Lap 2 and ends at the beginning of Lap 3
 s_start = s_ext(num_base_pts + 1);
 s_end   = s_ext(2 * num_base_pts + 1);
 
-% Interpolate densely to ensure smooth derivatives
-N_ext = num_base_pts * 3; 
+% Interpolate densely
+N_ext = max(3000, num_base_pts * 10); 
 s_interp_ext = linspace(s_ext(1), s_ext(end), N_ext);
-ref_x_raw = makima(s_ext, pts_ext(:,1), s_interp_ext)';
-ref_y_raw = makima(s_ext, pts_ext(:,2), s_interp_ext)';
 
-% Smooth the centerline coordinates
-ref_x_smooth = smoothdata(ref_x_raw, 'gaussian', 15);
-ref_y_smooth = smoothdata(ref_y_raw, 'gaussian', 15);
+% Use interp1 with 'pchip' to draw natural arcs and prevent matrix orientation errors
+ref_x_raw = interp1(s_ext, pts_ext(:,1), s_interp_ext, 'pchip')';
+ref_y_raw = interp1(s_ext, pts_ext(:,2), s_interp_ext, 'pchip')';
+
+% Apply moderate smoothing (~5 meters) to remove microscopic noise
+ds_ext = s_ext(end) / N_ext;
+spatial_window = max(10, round(5.0 / ds_ext)); 
+
+ref_x_smooth = smoothdata(ref_x_raw, 'gaussian', spatial_window);
+ref_y_smooth = smoothdata(ref_y_raw, 'gaussian', spatial_window);
 
 % Calculate continuous heading (psi)
-dx_ext_dense = gradient(ref_x_smooth);
-dy_ext_dense = gradient(ref_y_smooth);
-psi_ext_dense = unwrap(atan2(dy_ext_dense, dx_ext_dense));
+dx_d = gradient(ref_x_smooth);
+dy_d = gradient(ref_y_smooth);
+psi_ext_dense = unwrap(atan2(dy_d, dx_d));
 
 % Extract exactly the middle lap using the requested number of solver nodes
 N = nodes;
@@ -96,16 +115,46 @@ ref_path.x = interp1(s_interp_ext, ref_x_smooth, s_lap)';
 ref_path.y = interp1(s_interp_ext, ref_y_smooth, s_lap)';
 ref_path.psi = interp1(s_interp_ext, psi_ext_dense, s_lap)';
 
-% Interpolate and smooth the Left/Right widths from columns 3 and 4
-w_left_ext = repmat(pts_base(:,3), 3, 1);
-w_left_ext = [w_left_ext; pts_base(1, 3)];
-W_L_raw = makima(s_ext, w_left_ext, s_interp_ext)';
-ref_path.W_left = interp1(s_interp_ext, smoothdata(W_L_raw, 'gaussian', 15), s_lap)';
+% Interpolate Left/Right widths directly
+W_L_raw = interp1(s_ext, w_left_ext, s_interp_ext, 'pchip')';
+W_L_interp = interp1(s_interp_ext, W_L_raw, s_lap)';
 
-w_right_ext = repmat(pts_base(:,4), 3, 1);
-w_right_ext = [w_right_ext; pts_base(1, 4)];
-W_R_raw = makima(s_ext, w_right_ext, s_interp_ext)';
-ref_path.W_right = interp1(s_interp_ext, smoothdata(W_R_raw, 'gaussian', 15), s_lap)';
+W_R_raw = interp1(s_ext, w_right_ext, s_interp_ext, 'pchip')';
+W_R_interp = interp1(s_interp_ext, W_R_raw, s_lap)';
+
+% Smooth the widths BEFORE capping
+ds_lap_mean = (s_lap(end) - s_lap(1)) / N;
+window_lap = max(5, round(2.0 / ds_lap_mean)); % 2m smoothing window
+W_L_smooth = smoothdata(W_L_interp, 'gaussian', window_lap);
+W_R_smooth = smoothdata(W_R_interp, 'gaussian', window_lap);
+
+% --- EXACT WIDTH CAPPING (STRICT HARD CAP) ---
+% 1. Calculate exact analytical curvature on final nodes
+dx_lap = gradient(ref_path.x);
+dy_lap = gradient(ref_path.y);
+ddx_lap = gradient(dx_lap);
+ddy_lap = gradient(dy_lap);
+
+kappa_exact = (dx_lap .* ddy_lap - dy_lap .* ddx_lap) ./ ((dx_lap.^2 + dy_lap.^2).^1.5 + 1e-8);
+
+% Apply a smooth to the curvature to prevent single-point numerical spikes from jittering the cap
+kappa_smooth = smoothdata(kappa_exact, 'gaussian', window_lap * 2);
+R_smooth = 1 ./ (abs(kappa_smooth) + 1e-8);
+
+% 2. Cap widths securely at 90% of the true local radius
+W_L_capped = W_L_smooth;
+W_R_capped = W_R_smooth;
+
+is_left = kappa_smooth > 1e-3; 
+W_L_capped(is_left) = min(W_L_capped(is_left), R_smooth(is_left) * 0.90);
+
+is_right = kappa_smooth < -1e-3; 
+W_R_capped(is_right) = min(W_R_capped(is_right), R_smooth(is_right) * 0.90);
+
+% 3. Enforce absolute minimum drivable width
+% Prevents solver crashing if bounds pinch tighter than the 0.5m safety margin
+ref_path.W_left = max(W_L_capped, 0.6);
+ref_path.W_right = max(W_R_capped, 0.6);
 
 % Ensure exact machine-precision closure
 ref_path.x(end)   = ref_path.x(1);
@@ -253,19 +302,24 @@ y_proj = R_earth * (deg2rad(lat) - deg2rad(lat0));
 R_mat = [cos(theta), -sin(theta); sin(theta), cos(theta)];
 coords_rot = R_mat * [x_proj, y_proj]';
 
-% Initial guess using centroids
-init_dx = mean(ref_path.x) - mean(coords_rot(1,:)');
-init_dy = mean(ref_path.y) - mean(coords_rot(2,:)');
+% Extract optimal line coordinates to use as the alignment target
+n_opt_align = sol.value(n);
+x_opt_align = ref_path.x - n_opt_align .* sin(ref_path.psi);
+y_opt_align = ref_path.y + n_opt_align .* cos(ref_path.psi);
 
-% Optimize translation to snap GPS onto the track centerline
+% Initial guess using centroids
+init_dx = mean(x_opt_align) - mean(coords_rot(1,:)');
+init_dy = mean(y_opt_align) - mean(coords_rot(2,:)');
+
+% Optimize translation to snap GPS onto the optimal line
 ds_idx = 1:5:length(coords_rot(1,:)');
 x_sub = coords_rot(1, ds_idx)';
 y_sub = coords_rot(2, ds_idx)';
 
-align_cost = @(T) sum(min((x_sub + T(1) - ref_path.x').^2 + (y_sub + T(2) - ref_path.y').^2, [], 2));
+align_cost = @(T) sum(min((x_sub + T(1) - x_opt_align').^2 + (y_sub + T(2) - y_opt_align').^2, [], 2));
 opts = optimset('Display', 'none');
 T_opt = fminsearch(align_cost, [init_dx, init_dy], opts);
-fprintf('Auto-translation applied: X shifted by %+.2fm, Y shifted by %+.2fm\n', T_opt(1), T_opt(2));
+fprintf('Auto-translation applied (Aligned to Optimal Line): X shifted by %+.2fm, Y shifted by %+.2fm\n', T_opt(1), T_opt(2));
 
 x_trans = coords_rot(1,:)' + T_opt(1);
 y_trans = coords_rot(2,:)' + T_opt(2);

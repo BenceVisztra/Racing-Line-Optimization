@@ -1,0 +1,3 @@
+# Normalise line endings in the repository, check out with platform endings.
+# Prevents the CSV/.m files from showing as modified purely due to CRLF vs LF.
+* text=auto

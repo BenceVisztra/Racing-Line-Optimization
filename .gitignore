@@ -1,0 +1,13 @@
+# Draft / superseded scripts kept locally for reference
+track_optimization - first kartplanet.m
+track_optimization_karttrack_backup.m
+
+# MATLAB build artefacts
+slprj/
+*.slxc
+*.asv
+crashinfo.*
+
+# OS noise
+Thumbs.db
+.DS_Store

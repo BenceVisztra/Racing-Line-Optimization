@@ -1,7 +1,7 @@
 % Two-Boundary Track Digitizer
-img = imread('satelite_kistarcsa.png');
-ruler_on_map = 50.05;
-filename = 'track_kistarcsa.csv';
+img = imread('satelite_t_race.png');
+ruler_on_map = 40;
+filename = 'track_t_race_cw3.csv';
 
 
 figure('Name', 'Boundary Digitizer', 'Position', [100, 100, 1200, 800]);
