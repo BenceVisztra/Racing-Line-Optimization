@@ -1,3 +1,4 @@
+
 % Racing Line and Lap Time Optimization using CasADi
 clear; clc; close all;
 % Run this command first
@@ -12,11 +13,11 @@ v_max = 67.0 / 3.6; % Top speed limit
 mass = 110.0; % kg
 P_motor = 12000.0; % W (12 kW)
 efficiency = 0.85; % Drivetrain efficiency multiplier
-A_lat = 0.9 * g;
+A_lat = 1.5 * g;
 A_long_fwd = 0.55 * g;
 A_long_brake = 0.55 * g;
-J_long = 1.0 * g;
-R_min = 3;
+J_long = 1.5 * g;
+R_min_vehicle = 2;
 
 % Dynamic Lateral Jerk Parameters
 lat_jerk_max = 4.0 * g;
@@ -25,94 +26,213 @@ speed_lat_jerk_min = 20.0 / 3.6; % km/h (Highest jerk allowed below this speed)
 speed_lat_jerk_max = 60.0 / 3.6; % km/h (Lowest jerk allowed above this speed)
 
 % Solver Nodes (recommended at least 1-5 node/m)
-nodes = 1500;
+nodes = 300;
 % Optimizer filters
 W_smooth = 0.001 * nodes; 
 W_vel_smooth = 0.00005 * nodes; 
+% Cost function 1st derivative weight. This drags the line towards the
+% defined track line - generally makes the line tighter - "point and
+% shoot". Adjust this to fit your riding style.
+W_effort = 0.0; % Riding style: 0.0 = "Smooth" (wide arcs), 0.1+ = "Point & Shoot" (tight lines);
 
 
 % Import Data
-rc_data = readtable(['gps_kartplanet_51_87.csv']); %gps_kartplanet_david_47_56 %gps_t_race_ts_11_96 %gps_kistarcsa_mojo_28_33
+rc_data = readtable('gps_t_race_ts_11_96.csv'); %gps_kartplanet_david_47_56 %gps_t_race_ts_11_96 %gps_kistarcsa_mojo_28_33
 % Telemetry Rotation
-theta = 0; % radians %3.665 for 12.09; 3.697 for 11.96
+theta = 3.697; % radians %5.268 for t-race 11.96; 3.665 for 12.09; 3.697 for 11.96
 
 
 % Track Definition
-track_name = 'track_kartplanet.csv';
+track_name = 'T race CW';
 track_pts = track_selection(track_name);
 % Options:
-% T race CW
+% T race CW track_t_race_cw.csv
 % T race CCW
 % track_kartplanet.csv
 % track_kistarcsa.csv
 
+% --- Per-track vehicle overrides -------------------------------------------
+% Grip level and the tightest radius a kart can actually hold differ per
+% venue. Keeping one hard-coded set of limits silently over-constrains the
+% wrong track: the T-Race surface has more grip than KartPlanet/Kistarcsa and
+% its tightest corner is tighter than the 3 m generic default, so leaving the
+% defaults in place fights the reference geometry and inflates lap time.
+%   {track file contains, lateral grip [g], min corner radius [m]}
+%vehicle_overrides = { ...
+%    'track_t_race',     1.5, 2.0; ...
+%    'track_kartplanet', 0.9, 3.0; ...
+%    'track_kistarcsa',  0.9, 3.0};
+
+% contains() sizes its OUTPUT on its first argument, so with a scalar
+% track_name it returned a 1x1 any() - true for every track - and find(...,1)
+% always returned row 1.  Every track was therefore being solved with the
+% T-Race limits (1.5 g, R_min_vehicle 2.0) and the per-track table below did nothing.
+% Matching each key in turn returns a real per-row result.
+%ovr_row = find(cellfun(@(k) contains(track_name, k), vehicle_overrides(:, 1)), 1);
+%if ~isempty(ovr_row)
+%    A_lat = vehicle_overrides{ovr_row, 2} * g;
+%    R_min_vehicle = vehicle_overrides{ovr_row, 3};
+%end
+%fprintf('[setup] %-22s A_lat = %.2f g   R_min_vehicle = %.2f m\n', track_name, A_lat / g, R_min_vehicle);
+
 P_max = P_motor * efficiency; % Effective power applied to track
 
 %% 2. Generate Reference Centerline with Periodic Boundaries
-% Use the full continuous track directly
 pts_base = track_pts; 
 
-% Sanitize data: replace any NaNs caused by CSV formatting
-pts_base(:,3) = fillmissing(pts_base(:,3), 'nearest');
-pts_base(:,4) = fillmissing(pts_base(:,4), 'nearest');
-% Fallback if the entire 4th column was empty/unparseable
-if all(isnan(pts_base(:,4))), pts_base(:,4) = pts_base(:,3); end
+% Detect if this is a Point-Based Apex Track or a Continuous Boundary Track
+% Point tracks have few rows, and column 4 contains direction flags (1 or -1)
+is_point_track = (size(pts_base, 1) < 20) && any(pts_base(:,4) == 1 | pts_base(:,4) == -1);
 
-num_base_pts = size(pts_base, 1);
+if is_point_track
+    % --- A. POINT-BASED TRACK LOGIC ---
+    gate_mid = (pts_base(1, 1:2) + pts_base(2, 1:2)) / 2;
+    pts_center = [gate_mid; pts_base(3:end, 1:2)];
+    num_pts = size(pts_center, 1);
+    
+    pts_ext = repmat(pts_center, 3, 1);
+    pts_ext = [pts_ext; pts_center(1, :)]; 
+    
+    d_chord_ext = sqrt(diff(pts_ext(:,1)).^2 + diff(pts_ext(:,2)).^2);
+    d_chord_ext(d_chord_ext == 0) = 1e-6; 
+    s_ext = [0; cumsum(d_chord_ext)];
+    
+    s_start = s_ext(num_pts + 1);
+    s_end   = s_ext(2 * num_pts + 1);
+    
+    N_ext = max(3000, num_pts * 100); 
+    s_interp_ext = linspace(s_ext(1), s_ext(end), N_ext);
+    
+    % Spline directly through the cones to form the mathematical baseline
+    ref_x_raw = interp1(s_ext, pts_ext(:,1), s_interp_ext, 'pchip')';
+    ref_y_raw = interp1(s_ext, pts_ext(:,2), s_interp_ext, 'pchip')';
+    
+    % Smooth to give the car a natural sweeping reference line
+    ds_ext = s_ext(end) / N_ext;
+    spatial_window = max(10, round(15.0 / ds_ext)); 
+    ref_x_smooth = smoothdata(ref_x_raw, 'gaussian', spatial_window);
+    ref_y_smooth = smoothdata(ref_y_raw, 'gaussian', spatial_window);
+    
+    dx_d = gradient(ref_x_smooth); dy_d = gradient(ref_y_smooth);
+    psi_ext_dense = unwrap(atan2(dy_d, dx_d));
+    
+    N = nodes;
+    s_lap = linspace(s_start, s_end, N);
+    ref_path.x = interp1(s_interp_ext, ref_x_smooth, s_lap)';
+    ref_path.y = interp1(s_interp_ext, ref_y_smooth, s_lap)';
+    ref_path.psi = interp1(s_interp_ext, psi_ext_dense, s_lap)';
+    
+    % Set an arbitrary wide boundary for the solver to drive freely within
+    ref_path.W_left = 10 * ones(N, 1);
+    ref_path.W_right = 10 * ones(N, 1);
 
-% Replicate base track coordinates 3 times to ensure complete periodic symmetry
-pts_ext = repmat(pts_base(:, 1:2), 3, 1);
-pts_ext = [pts_ext; pts_base(1, 1:2)]; % Close trailing loop
-
-% Calculate cumulative distance of the extended track
-dx_ext = diff(pts_ext(:,1));
-dy_ext = diff(pts_ext(:,2));
-d_chord_ext = sqrt(dx_ext.^2 + dy_ext.^2);
-s_ext = [0; cumsum(d_chord_ext)];
-
-% Center lap starts at the beginning of Lap 2 and ends at the beginning of Lap 3
-s_start = s_ext(num_base_pts + 1);
-s_end   = s_ext(2 * num_base_pts + 1);
-
-% Interpolate densely to ensure smooth derivatives
-N_ext = num_base_pts * 3; 
-s_interp_ext = linspace(s_ext(1), s_ext(end), N_ext);
-ref_x_raw = makima(s_ext, pts_ext(:,1), s_interp_ext)';
-ref_y_raw = makima(s_ext, pts_ext(:,2), s_interp_ext)';
-
-% Smooth the centerline coordinates
-ref_x_smooth = smoothdata(ref_x_raw, 'gaussian', 15);
-ref_y_smooth = smoothdata(ref_y_raw, 'gaussian', 15);
-
-% Calculate continuous heading (psi)
-dx_ext_dense = gradient(ref_x_smooth);
-dy_ext_dense = gradient(ref_y_smooth);
-psi_ext_dense = unwrap(atan2(dy_ext_dense, dx_ext_dense));
-
-% Extract exactly the middle lap using the requested number of solver nodes
-N = nodes;
-s_lap = linspace(s_start, s_end, N);
-ref_path.x = interp1(s_interp_ext, ref_x_smooth, s_lap)';
-ref_path.y = interp1(s_interp_ext, ref_y_smooth, s_lap)';
-ref_path.psi = interp1(s_interp_ext, psi_ext_dense, s_lap)';
-
-% Interpolate and smooth the Left/Right widths from columns 3 and 4
-w_left_ext = repmat(pts_base(:,3), 3, 1);
-w_left_ext = [w_left_ext; pts_base(1, 3)];
-W_L_raw = makima(s_ext, w_left_ext, s_interp_ext)';
-ref_path.W_left = interp1(s_interp_ext, smoothdata(W_L_raw, 'gaussian', 15), s_lap)';
-
-w_right_ext = repmat(pts_base(:,4), 3, 1);
-w_right_ext = [w_right_ext; pts_base(1, 4)];
-W_R_raw = makima(s_ext, w_right_ext, s_interp_ext)';
-ref_path.W_right = interp1(s_interp_ext, smoothdata(W_R_raw, 'gaussian', 15), s_lap)';
+else
+    % --- B. CONTINUOUS BOUNDARY TRACK LOGIC ---
+    % Sanitize data: Catch missing columns AND entirely empty (NaN) columns
+    if size(pts_base, 2) < 3, pts_base(:,3) = 2.0; end 
+    if size(pts_base, 2) < 4, pts_base(:,4) = pts_base(:,3); end
+    
+    if all(isnan(pts_base(:,3))), pts_base(:,3) = 2.0; end
+    if all(isnan(pts_base(:,4))), pts_base(:,4) = pts_base(:,3); end
+    
+    pts_base(:,3) = fillmissing(pts_base(:,3), 'nearest');
+    pts_base(:,4) = fillmissing(pts_base(:,4), 'nearest');
+    
+    num_base_pts = size(pts_base, 1);
+    
+    % Replicate base track coordinates 3 times to ensure complete periodic symmetry
+    pts_ext = repmat(pts_base(:, 1:2), 3, 1);
+    pts_ext = [pts_ext; pts_base(1, 1:2)]; 
+    
+    w_left_ext = repmat(pts_base(:,3), 3, 1);
+    w_left_ext = [w_left_ext; pts_base(1, 3)];
+    
+    w_right_ext = repmat(pts_base(:,4), 3, 1);
+    w_right_ext = [w_right_ext; pts_base(1, 4)];
+    
+    % Calculate cumulative distance of the extended track
+    dx_ext = diff(pts_ext(:,1));
+    dy_ext = diff(pts_ext(:,2));
+    d_chord_ext = sqrt(dx_ext.^2 + dy_ext.^2);
+    
+    % FORCE STRICTLY MONOTONIC DISTANCES
+    d_chord_ext(d_chord_ext == 0) = 1e-6; 
+    s_ext = [0; cumsum(d_chord_ext)];
+    
+    s_start = s_ext(num_base_pts + 1);
+    s_end   = s_ext(2 * num_base_pts + 1);
+    
+    % Interpolate densely
+    N_ext = max(3000, num_base_pts * 10); 
+    s_interp_ext = linspace(s_ext(1), s_ext(end), N_ext);
+    
+    ref_x_raw = interp1(s_ext, pts_ext(:,1), s_interp_ext, 'pchip')';
+    ref_y_raw = interp1(s_ext, pts_ext(:,2), s_interp_ext, 'pchip')';
+    
+    % Apply moderate smoothing (~5 meters) to remove microscopic noise
+    ds_ext = s_ext(end) / N_ext;
+    spatial_window = max(10, round(5.0 / ds_ext)); 
+    
+    ref_x_smooth = smoothdata(ref_x_raw, 'gaussian', spatial_window);
+    ref_y_smooth = smoothdata(ref_y_raw, 'gaussian', spatial_window);
+    
+    dx_d = gradient(ref_x_smooth);
+    dy_d = gradient(ref_y_smooth);
+    psi_ext_dense = unwrap(atan2(dy_d, dx_d));
+    
+    N = nodes;
+    s_lap = linspace(s_start, s_end, N);
+    ref_path.x = interp1(s_interp_ext, ref_x_smooth, s_lap)';
+    ref_path.y = interp1(s_interp_ext, ref_y_smooth, s_lap)';
+    ref_path.psi = interp1(s_interp_ext, psi_ext_dense, s_lap)';
+    
+    % Interpolate Left/Right widths directly
+    W_L_raw = interp1(s_ext, w_left_ext, s_interp_ext, 'pchip')';
+    W_L_interp = interp1(s_interp_ext, W_L_raw, s_lap)';
+    
+    W_R_raw = interp1(s_ext, w_right_ext, s_interp_ext, 'pchip')';
+    W_R_interp = interp1(s_interp_ext, W_R_raw, s_lap)';
+    
+    % Smooth the widths BEFORE capping
+    ds_lap_mean = (s_lap(end) - s_lap(1)) / N;
+    window_lap = max(5, round(2.0 / ds_lap_mean)); % 2m smoothing window
+    W_L_smooth = smoothdata(W_L_interp, 'gaussian', window_lap);
+    W_R_smooth = smoothdata(W_R_interp, 'gaussian', window_lap);
+    
+    % --- EXACT WIDTH CAPPING (STRICT HARD CAP) ---
+    dx_lap = gradient(ref_path.x);
+    dy_lap = gradient(ref_path.y);
+    ddx_lap = gradient(dx_lap);
+    ddy_lap = gradient(dy_lap);
+    
+    kappa_exact = (dx_lap .* ddy_lap - dy_lap .* ddx_lap) ./ ((dx_lap.^2 + dy_lap.^2).^1.5 + 1e-8);
+    
+    kappa_smooth = smoothdata(kappa_exact, 'gaussian', window_lap * 2);
+    R_smooth = 1 ./ (abs(kappa_smooth) + 1e-8);
+    
+    % Cap widths securely at 90% of the true local radius
+    W_L_capped = W_L_smooth;
+    W_R_capped = W_R_smooth;
+    
+    is_left = kappa_smooth > 1e-3; 
+    W_L_capped(is_left) = min(W_L_capped(is_left), R_smooth(is_left) * 0.90);
+    
+    is_right = kappa_smooth < -1e-3; 
+    W_R_capped(is_right) = min(W_R_capped(is_right), R_smooth(is_right) * 0.90);
+    
+    % Enforce absolute minimum drivable width
+    ref_path.W_left = max(W_L_capped(:), 0.6);
+    ref_path.W_right = max(W_R_capped(:), 0.6);
+end
 
 % Ensure exact machine-precision closure
 ref_path.x(end)   = ref_path.x(1);
 ref_path.y(end)   = ref_path.y(1);
 ref_path.psi(end) = ref_path.psi(1);
-ref_path.W_left(end) = ref_path.W_left(1);
-ref_path.W_right(end) = ref_path.W_right(1);
+if ~is_point_track
+    ref_path.W_left(end) = ref_path.W_left(1);
+    ref_path.W_right(end) = ref_path.W_right(1);
+end
 
 %% 3. State Vector Initialization (CasADi)
 N=nodes;
@@ -126,9 +246,48 @@ v  = opti.variable(N, 1);       % Velocity (m/s)
 dt = opti.variable(N-1, 1);     % Time step (s)
 
 %% 4. Bounds and Track Limits
-% Subtract a 0.5m safety margin from both sides to keep the kart on the drivable racing surface
-lb_n = -(ref_path.W_right - 0.5); 
-ub_n =  (ref_path.W_left - 0.5);
+if exist('is_point_track', 'var') && is_point_track
+    % --- A. POINT-BASED BOUNDS (Apex Cones) ---
+    lb_n = -ref_path.W_right;
+    ub_n =  ref_path.W_left;
+    
+    % Punch holes dynamically to force the solver around the apex cones
+    for i = 3:size(pts_base, 1)
+        Px = pts_base(i,1);
+        Py = pts_base(i,2);
+        keepout = pts_base(i,3);
+        is_CW = (pts_base(i,4) == 1);
+        
+        dist = sqrt((ref_path.x - Px).^2 + (ref_path.y - Py).^2);
+        [~, idx] = min(dist);
+        
+        nx = -sin(ref_path.psi(idx));
+        ny =  cos(ref_path.psi(idx));
+        n_apex = (Px - ref_path.x(idx)) * nx + (Py - ref_path.y(idx)) * ny;
+        
+        chord_margin = 0.2; 
+        
+        prev_idx = idx - 1; if prev_idx < 1, prev_idx = N - 1; end
+        next_idx = idx + 1; if next_idx > N, next_idx = 2; end
+        
+        if is_CW
+            lb_n(idx)      = max(lb_n(idx), n_apex + keepout + chord_margin);
+            lb_n(prev_idx) = max(lb_n(prev_idx), n_apex + keepout);
+            lb_n(next_idx) = max(lb_n(next_idx), n_apex + keepout);
+        else
+            ub_n(idx)      = min(ub_n(idx), n_apex - keepout - chord_margin);
+            ub_n(prev_idx) = min(ub_n(prev_idx), n_apex - keepout);
+            ub_n(next_idx) = min(ub_n(next_idx), n_apex - keepout);
+        end
+    end
+    lb_n(1) = lb_n(N); ub_n(1) = ub_n(N);
+    
+else
+    % --- B. CONTINUOUS BOUNDS ---
+    % Subtract a 0.5m safety margin from both sides
+    lb_n = -(ref_path.W_right - 0.5); 
+    ub_n =  (ref_path.W_left - 0.5);
+end
 
 opti.subject_to(lb_n <= n <= ub_n);
 opti.subject_to(1.0 <= v <= v_max); % Applied top speed limit
@@ -140,10 +299,16 @@ opti.set_initial(dt, 0.2 * ones(N-1, 1));
 
 %% 5. Objective & Nonlinear Constraints (CasADi)
 
-% Target the 2nd derivative (wiggliness/steering) instead of distance from center
+% Target the 2nd derivative (steering smoothness) as the baseline
 costFunc = sum(dt) ...
     + W_smooth * sumsqr(diff(diff([n; n(1); n(2)]))) ...
     + W_vel_smooth * sumsqr(diff([v; v(1)]));
+
+% Apply the 1st-derivative penalty (rider effort / distance minimization)
+% Scaled by nodes to maintain mesh independence
+if W_effort > 0
+    costFunc = costFunc + (W_effort * (nodes / 100)) * sumsqr(diff([n; n(1)]));
+end
 
 opti.minimize(costFunc);
 
@@ -186,7 +351,7 @@ dHeading = atan2(cross_p, dot_p);
 ds_nodes = 0.5 * (ds_wrap(1:end-1) + ds_wrap(2:end));
 kappa = dHeading ./ ds_nodes; % Length N-1 (all unique nodes)
 
-opti.subject_to(-1/R_min <= kappa <= 1/R_min);
+opti.subject_to(-1/R_min_vehicle <= kappa <= 1/R_min_vehicle);
 
 % 5. Periodic Acceleration Constraints
 a_x_seg = diff(v) ./ dt; % Length N-1
@@ -253,19 +418,24 @@ y_proj = R_earth * (deg2rad(lat) - deg2rad(lat0));
 R_mat = [cos(theta), -sin(theta); sin(theta), cos(theta)];
 coords_rot = R_mat * [x_proj, y_proj]';
 
-% Initial guess using centroids
-init_dx = mean(ref_path.x) - mean(coords_rot(1,:)');
-init_dy = mean(ref_path.y) - mean(coords_rot(2,:)');
+% Extract optimal line coordinates to use as the alignment target
+n_opt_align = sol.value(n);
+x_opt_align = ref_path.x - n_opt_align .* sin(ref_path.psi);
+y_opt_align = ref_path.y + n_opt_align .* cos(ref_path.psi);
 
-% Optimize translation to snap GPS onto the track centerline
+% Initial guess using centroids
+init_dx = mean(x_opt_align) - mean(coords_rot(1,:)');
+init_dy = mean(y_opt_align) - mean(coords_rot(2,:)');
+
+% Optimize translation to snap GPS onto the optimal line
 ds_idx = 1:5:length(coords_rot(1,:)');
 x_sub = coords_rot(1, ds_idx)';
 y_sub = coords_rot(2, ds_idx)';
 
-align_cost = @(T) sum(min((x_sub + T(1) - ref_path.x').^2 + (y_sub + T(2) - ref_path.y').^2, [], 2));
+align_cost = @(T) sum(min((x_sub + T(1) - x_opt_align').^2 + (y_sub + T(2) - y_opt_align').^2, [], 2));
 opts = optimset('Display', 'none');
 T_opt = fminsearch(align_cost, [init_dx, init_dy], opts);
-fprintf('Auto-translation applied: X shifted by %+.2fm, Y shifted by %+.2fm\n', T_opt(1), T_opt(2));
+fprintf('Auto-translation applied (Aligned to Optimal Line): X shifted by %+.2fm, Y shifted by %+.2fm\n', T_opt(1), T_opt(2));
 
 x_trans = coords_rot(1,:)' + T_opt(1);
 y_trans = coords_rot(2,:)' + T_opt(2);
@@ -422,26 +592,31 @@ hover_data.s     = s_dense;
 % Create or update Figure 1, force docking, and clear previous run data
 figure(1);
 set(gcf, 'WindowStyle', 'docked');
-clf;
+clf; hold on;
 
-% Calculate continuous track boundary coordinates
+% Calculate continuous track boundary coordinates (needed for delta ribbon calculation)
 bound_L_x = ref_path.x - ref_path.W_left .* sin(ref_path.psi);
 bound_L_y = ref_path.y + ref_path.W_left .* cos(ref_path.psi);
 bound_R_x = ref_path.x - (-ref_path.W_right) .* sin(ref_path.psi);
 bound_R_y = ref_path.y + (-ref_path.W_right) .* cos(ref_path.psi);
 
-% Plot the continuous boundaries
-plot(bound_L_x, bound_L_y, '-', 'Color', [0.4 0.4 0.4], 'LineWidth', 1.5, 'HandleVisibility', 'off'); hold on;
-plot(bound_R_x, bound_R_y, '-', 'Color', [0.4 0.4 0.4], 'LineWidth', 1.5, 'HandleVisibility', 'off');
+if exist('is_point_track', 'var') && is_point_track
+    % Use track points for bounding box calculations
+    x_all = [ref_path.x; track_pts(:,1)];
+    y_all = [ref_path.y; track_pts(:,2)];
+else
+    % Plot the continuous physical boundaries
+    plot(bound_L_x, bound_L_y, '-', 'Color', [0.4 0.4 0.4], 'LineWidth', 1.5, 'HandleVisibility', 'off');
+    plot(bound_R_x, bound_R_y, '-', 'Color', [0.4 0.4 0.4], 'LineWidth', 1.5, 'HandleVisibility', 'off');
+    
+    x_all = [ref_path.x; bound_L_x; bound_R_x];
+    y_all = [ref_path.y; bound_L_y; bound_R_y];
+end
 
 % Calculate track bounding box to make figure height 5% taller than drawing
-x_all = [ref_path.x; bound_L_x; bound_R_x];
-y_all = [ref_path.y; bound_L_y; bound_R_y];
 x_min = min(x_all); x_max = max(x_all);
 y_min = min(y_all); y_max = max(y_all);
-
-x_span = x_max - x_min;
-y_span = y_max - y_min;
+x_span = x_max - x_min; y_span = y_max - y_min;
 
 % Add 5% extra height symmetrically to Y-limits
 y_padding = (y_span * 1.05 - y_span) / 2;
@@ -453,27 +628,62 @@ daspect([1 1 1]);
 grid on;
 
 % Setup Centerline and Dummy Lines for Legend
-h_center = plot(ref_path.x, ref_path.y, 'k--', 'DisplayName', 'Centerline'); hold on;
+h_center = plot(ref_path.x, ref_path.y, 'k--', 'DisplayName', 'Centerline');
 h_opt_dummy = plot(NaN, NaN, 'Color', [1, 1, 0], 'LineStyle', '--', 'LineWidth', 2);
 h_gps_dummy = plot(NaN, NaN, 'Color', [1, 1, 0], 'LineStyle', '-', 'LineWidth', 2);
 
-% Draw Start/Finish Line at the first node (where counting starts)
-h_fin = plot([bound_L_x(1), bound_R_x(1)], [bound_L_y(1), bound_R_y(1)], ...
-    'w-', 'LineWidth', 2, 'DisplayName', 'Start/Finish');
+if exist('is_point_track', 'var') && is_point_track
+    % Draw thin dashed white line between S/F points
+    plot([track_pts(1,1), track_pts(2,1)], [track_pts(1,2), track_pts(2,2)], 'w--', 'LineWidth', 1, 'HandleVisibility', 'off');
+    
+    % Scatter S/F Gates (Indices 1 & 2)
+    h_fin = scatter(track_pts(1:2, 1), track_pts(1:2, 2), 80, [1, 1, 1], 'filled', 'MarkerEdgeColor', 'k', 'LineWidth', 1.5, 'DisplayName', 'Start/Finish');
+    
+    % Scatter Right-hand Apexes (CW = 1)
+    idx_right = find(track_pts(3:end, 4) == 1) + 2;
+    if ~isempty(idx_right)
+        h_right = scatter(track_pts(idx_right, 1), track_pts(idx_right, 2), 80, [0.2, 0.2, 1], 'filled', 'MarkerEdgeColor', 'w', 'LineWidth', 1.5, 'DisplayName', 'Right Apex');
+    end
+    
+    % Scatter Left-hand Apexes (CCW = -1)
+    idx_left = find(track_pts(3:end, 4) == -1) + 2;
+    if ~isempty(idx_left)
+        h_left = scatter(track_pts(idx_left, 1), track_pts(idx_left, 2), 80, [1, 0, 1], 'filled', 'MarkerEdgeColor', 'w', 'LineWidth', 1.5, 'DisplayName', 'Left Apex');
+    end
+else
+    % Draw standard Start/Finish Line at the first node
+    h_fin = plot([bound_L_x(1), bound_R_x(1)], [bound_L_y(1), bound_R_y(1)], 'w-', 'LineWidth', 2, 'DisplayName', 'Start/Finish');
+end
 
 
 % --- Delta Time Track Ribbon ---
-% Close the boundary loops to match the N+1 length of x_plot / y_plot
-bLx_plot = [bound_L_x; bound_L_x(1)];
-bLy_plot = [bound_L_y; bound_L_y(1)];
-bRx_plot = [bound_R_x; bound_R_x(1)];
-bRy_plot = [bound_R_y; bound_R_y(1)];
+if exist('is_point_track', 'var') && is_point_track
+    % For point-based tracks, calculate a fixed 3m wide ribbon centered on the optimal line
+    dx_dense = gradient(x_plot_dense);
+    dy_dense = gradient(y_plot_dense);
+    L_dense = max(sqrt(dx_dense.^2 + dy_dense.^2), 1e-6);
+    nx_dense = -dy_dense ./ L_dense;
+    ny_dense = dx_dense ./ L_dense;
 
-% Interpolate actual track limits to the dense array used for coloring
-X_left  = interp1(s_opt, bLx_plot(unique_idx), s_dense, 'makima');
-Y_left  = interp1(s_opt, bLy_plot(unique_idx), s_dense, 'makima');
-X_right = interp1(s_opt, bRx_plot(unique_idx), s_dense, 'makima');
-Y_right = interp1(s_opt, bRy_plot(unique_idx), s_dense, 'makima');
+    % 1.5m on each side = 3m total width
+    X_left  = x_plot_dense + 1.5 * nx_dense;
+    Y_left  = y_plot_dense + 1.5 * ny_dense;
+    X_right = x_plot_dense - 1.5 * nx_dense;
+    Y_right = y_plot_dense - 1.5 * ny_dense;
+else
+    % For continuous tracks, fill the entire physical track width
+    % Close the boundary loops to match the N+1 length of x_plot / y_plot
+    bLx_plot = [bound_L_x; bound_L_x(1)];
+    bLy_plot = [bound_L_y; bound_L_y(1)];
+    bRx_plot = [bound_R_x; bound_R_x(1)];
+    bRy_plot = [bound_R_y; bound_R_y(1)];
+
+    % Interpolate actual track limits to the dense array used for coloring
+    X_left  = interp1(s_opt, bLx_plot(unique_idx), s_dense, 'makima');
+    Y_left  = interp1(s_opt, bLy_plot(unique_idx), s_dense, 'makima');
+    X_right = interp1(s_opt, bRx_plot(unique_idx), s_dense, 'makima');
+    Y_right = interp1(s_opt, bRy_plot(unique_idx), s_dense, 'makima');
+end
 
 % Extract unique GPS spatial data for interpolation
 s_rc_raw_temp = [0; cumsum(ds_rc)];
